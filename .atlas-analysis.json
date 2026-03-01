@@ -1,0 +1,119 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Stable Diffusion from Scratch",
+  "projectDescription": "Implementation of DDPM and DDIM diffusion models from scratch in PyTorch for MNIST and CIFAR-10 image generation.",
+  "theme": "aspen",
+  "primaryColor": "#8B5CF6",
+  "lightColor": "#A78BFA",
+  "darkColor": "#6D28D9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/diffusion-process",
+              "concepts/ddpm",
+              "concepts/ddim",
+              "concepts/noise-schedules"
+            ]
+          },
+          {
+            "group": "Training Guides",
+            "pages": [
+              "training/mnist",
+              "training/cifar10",
+              "training/hpc-slurm"
+            ]
+          },
+          {
+            "group": "Model Architecture",
+            "pages": [
+              "architecture/unet",
+              "architecture/mnist-model",
+              "architecture/cifar-model",
+              "architecture/ema"
+            ]
+          },
+          {
+            "group": "Sampling & Inference",
+            "pages": [
+              "sampling/ddpm-sampling",
+              "sampling/ddim-sampling",
+              "sampling/interpolation"
+            ]
+          },
+          {
+            "group": "Experiments",
+            "pages": [
+              "experiments/ddpm-vs-ddim",
+              "experiments/speed-quality-tradeoffs",
+              "experiments/timestep-analysis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Models",
+            "pages": [
+              "api/diffusion-process",
+              "api/diffusion-model",
+              "api/diffusion-cifar"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "api/train-mnist",
+              "api/train-cifar"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/ddim-comparison",
+              "api/interpolation"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "DDPM and DDIM implementation from scratch in PyTorch",
+    "U-Net architecture with self-attention for MNIST and CIFAR-10",
+    "Cosine and linear noise schedules",
+    "Exponential Moving Average (EMA) for stable sampling",
+    "DDIM deterministic sampling with configurable step counts",
+    "Speed vs quality trade-off analysis",
+    "Latent space interpolation between samples",
+    "SLURM cluster training support"
+  ],
+  "publicApiSurface": [
+    "DiffusionProcess",
+    "DiffusionModel",
+    "DiffusionProcessCIFAR",
+    "DiffusionModelCIFAR",
+    "DiffusionProcess.add_noise()",
+    "DiffusionProcess.sample()",
+    "DiffusionProcess.sample_ddim()",
+    "train_diffusion.py",
+    "train_diffusion_cifar.py",
+    "ddim_comparison_mnist.py",
+    "ddim_comparison_cifar.py",
+    "interpolation_and_timesteps.py"
+  ]
+}
