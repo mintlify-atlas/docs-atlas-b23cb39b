@@ -1,0 +1,246 @@
+---
+title: Speed vs quality tradeoffs
+description: Analysis of how step count affects generation speed and sample quality
+---
+
+Understanding the relationship between inference steps and output quality is crucial for deploying diffusion models in practice. This analysis explores how different step counts affect both speed and quality.
+
+## The fundamental tradeoff
+
+Diffusion models work by gradually denoising random noise over many timesteps. More steps generally mean:
+- **Better quality**: More opportunities to refine the sample
+- **Slower generation**: Each step requires a forward pass through the model
+
+DDIM allows us to skip steps while maintaining quality, enabling practical speed-quality tradeoffs.
+
+## Measuring the tradeoff
+
+The comparison scripts systematically test step counts from 10 to 1000:
+
+```python
+ddim_step_configs = [10, 20, 50, 100, 250, 500, 1000]
+```
+
+For each configuration, we measure:
+1. **Total sampling time** for 16 samples
+2. **Per-sample time** (average)
+3. **Speedup ratio** compared to DDPM baseline
+4. **Visual quality** of generated samples
+
+## Speed analysis
+
+### Linear speedup relationship
+
+The speedup scales approximately inversely with step count (src/utilities/ddim_comparison_mnist.py:147-158):
+
+```python
+# Line plot: speedup vs steps
+ddim_steps_plot = [s for s in ddim_step_configs]
+speedups = [results["ddim"][s]["speedup"] for s in ddim_step_configs]
+ax2.plot(ddim_steps_plot, speedups, marker='o', linewidth=2.5)
+ax2.set_xscale('log')  # Log scale shows the relationship clearly
+```
+
+Typical speedup ratios:
+- 1000 steps: 1.0x (baseline)
+- 500 steps: ~2x
+- 250 steps: ~4x
+- 100 steps: ~10x
+- 50 steps: ~20x
+- 20 steps: ~50x
+- 10 steps: ~100x
+
+<Info>
+The relationship is nearly perfectly linear on a log-log plot, confirming that sampling time is dominated by the number of model forward passes.
+</Info>
+
+### Hardware considerations
+
+Actual timing depends on:
+- **GPU type**: Faster GPUs (A100, H100) reduce absolute time but maintain relative speedups
+- **Model size**: Larger models (CIFAR-10) take longer per step than smaller ones (MNIST)
+- **Batch size**: Larger batches amortize overhead but don't change per-sample time significantly
+
+## Quality analysis
+
+### Visual quality assessment
+
+The comparison generates side-by-side grids to visually compare quality (src/utilities/ddim_comparison_mnist.py:94-127):
+
+```python
+# DDPM samples
+grid = utils.make_grid(
+    torch.clamp((results["ddpm"]["samples"] + 1) / 2, 0, 1), 
+    nrow=4
+)
+axes[0, 0].set_title(
+    f"DDPM\n(1000 steps, {results['ddpm']['time']:.2f}s)"
+)
+
+# DDIM samples at various steps
+for steps in ddim_display_steps:
+    grid = utils.make_grid(
+        torch.clamp((results["ddim"][steps]["samples"] + 1) / 2, 0, 1),
+        nrow=4
+    )
+    axes[row, col].set_title(
+        f"DDIM\n({steps} steps, {results['ddim'][steps]['time']:.2f}s, {speedup:.1f}x)"
+    )
+```
+
+This allows direct visual comparison of quality degradation as steps decrease.
+
+### Dataset-specific quality curves
+
+**MNIST** (simpler dataset):
+- 100+ steps: Indistinguishable from DDPM
+- 50 steps: Excellent quality, minor smoothing
+- 20 steps: Good quality, some artifacts
+- 10 steps: Recognizable but noisy
+
+**CIFAR-10** (complex natural images):
+- 250+ steps: Near-DDPM quality
+- 100 steps: Good quality with minor details lost
+- 50 steps: Recognizable but noticeable artifacts
+- 10 steps: Poor quality, significant artifacts
+
+<Warning>
+Quality degradation is non-linear. The last 50% of steps often provide diminishing returns, while cutting below a critical threshold causes rapid quality collapse.
+</Warning>
+
+## Finding the optimal point
+
+### The 80/20 rule
+
+For most applications, you can achieve 80% of DDPM quality with 20% of the steps:
+
+- **MNIST**: 50-100 steps (5-10% of 1000)
+- **CIFAR-10**: 100-250 steps (10-25% of 1000)
+
+This "sweet spot" provides massive speedups with minimal quality loss.
+
+### Application-specific tuning
+
+Choose step count based on your use case:
+
+| Use case | Priority | MNIST steps | CIFAR-10 steps |
+|----------|----------|-------------|----------------|
+| Real-time preview | Speed | 20-50 | 50-100 |
+| Interactive generation | Balance | 50-100 | 100-150 |
+| Production quality | Quality | 100-250 | 200-500 |
+| Research/comparison | Maximum | 500-1000 | 500-1000 |
+
+## Practical benchmarks
+
+The scripts generate detailed timing reports (src/utilities/ddim_comparison_mnist.py:189-196):
+
+```python
+report = f"""
+SAMPLING SPEED
+   • DDPM (1000 steps): {results['ddpm']['time']:.2f}s total, 
+     {results['ddpm']['time']/num_samples:.3f}s per sample
+"""
+
+for steps in ddim_step_configs:
+    r = results["ddim"][steps]
+    report += f"""   • DDIM ({steps:4d} steps): {r['time']:5.2f}s total, 
+     {r['time']/num_samples:.3f}s per sample (⚡ {r['speedup']:.2f}x speedup)
+"""
+```
+
+Example output for MNIST on a typical GPU:
+
+```
+SAMPLING SPEED
+   • DDPM (1000 steps): 45.32s total, 2.832s per sample
+   • DDIM (  10 steps):  0.52s total, 0.032s per sample (⚡ 87.15x speedup)
+   • DDIM (  50 steps):  2.18s total, 0.136s per sample (⚡ 20.78x speedup)
+   • DDIM ( 100 steps):  4.24s total, 0.265s per sample (⚡ 10.69x speedup)
+   • DDIM ( 250 steps): 10.45s total, 0.653s per sample (⚡  4.34x speedup)
+```
+
+## Visualizing the tradeoff
+
+The timing analysis charts provide two complementary views (src/utilities/ddim_comparison_mnist.py:130-163):
+
+### Bar chart: Absolute timing
+
+Shows actual sampling time for each configuration:
+
+```python
+ax1.bar(range(len(times_list)), times_list, color=colors)
+ax1.set_ylabel("Sampling Time (seconds)")
+ax1.set_title("Sampling Time Comparison")
+```
+
+This makes it easy to see absolute time requirements for your application.
+
+### Line plot: Speedup curve
+
+Shows speedup ratio vs steps on a log scale:
+
+```python
+ax2.plot(ddim_steps_plot, speedups, marker='o')
+ax2.axhline(y=1.0, color='#e74c3c', linestyle='--', label='DDPM Baseline')
+ax2.set_xscale('log')
+ax2.set_ylabel("Speedup (×)")
+```
+
+The log scale reveals the linear relationship between steps and speedup.
+
+## Key insights
+
+From the analysis reports (src/utilities/ddim_comparison_mnist.py:217-222):
+
+<Note>
+**Finding 1**: Quality remains strong even at 50-100 steps (10-20x fewer than DDPM)
+
+**Finding 2**: Speedup scales inversely with step count as expected
+
+**Finding 3**: The deterministic sampling (eta=0) produces consistent results while drastically reducing inference time
+
+**Finding 4**: The ability to trade speed for quality by adjusting step count makes DDIM versatile for different applications
+</Note>
+
+## Advanced: The eta parameter
+
+DDIM's `eta` parameter controls the amount of stochasticity:
+
+- **eta=0**: Fully deterministic (used in these experiments)
+- **eta=1**: Recovers DDPM stochastic behavior
+- **0 < eta < 1**: Intermediate stochasticity
+
+Higher eta may improve sample diversity but slows convergence, requiring more steps for the same quality.
+
+## Deployment recommendations
+
+### For production systems
+
+1. **Start with 100 steps** as a baseline
+2. **Run quality checks** with your specific use case
+3. **Reduce steps gradually** until quality becomes unacceptable
+4. **Add 20% buffer** for safety margin
+5. **Monitor quality metrics** in production
+
+### For research
+
+- Use 500-1000 steps for comparisons with published work
+- Report both DDPM and optimized DDIM results
+- Document the step count used for reproducibility
+
+### For interactive applications
+
+- Offer multiple quality presets (fast/balanced/quality)
+- Use 20-50 steps for real-time preview
+- Allow users to upscale with more steps if needed
+
+## Conclusion
+
+The speed-quality tradeoff in diffusion models is well-characterized and predictable:
+
+1. Sampling time scales linearly with step count
+2. Quality degrades gracefully until a critical threshold
+3. DDIM enables practical deployment at 10-20x speedup
+4. Optimal step count depends on dataset complexity and application requirements
+
+By understanding these tradeoffs, you can choose the right configuration for your specific needs.

@@ -1,0 +1,185 @@
+---
+title: Introduction
+description: Build denoising diffusion probabilistic models (DDPM) and DDIM samplers from scratch in PyTorch
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Hero Dark"
+/>
+
+## What is Stable Diffusion from Scratch?
+
+This project implements **denoising diffusion probabilistic models (DDPM)** and **DDIM samplers** from scratch in PyTorch, training them on MNIST and CIFAR-10 datasets. If you want to understand how diffusion models work step-by-step—without relying on Hugging Face or the diffusers library—this is the perfect starting point.
+
+By building these models yourself, you'll gain deep insights into:
+
+- How the forward diffusion process gradually adds noise to images
+- How the reverse process learns to denoise and generate new samples
+- The mathematics behind beta schedules and timestep sampling
+- The architecture of U-Nets with time embeddings and self-attention
+- Trade-offs between DDPM and DDIM sampling methods
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card
+    title="MNIST DDPM"
+    icon="grid-2"
+  >
+    U-Net architecture with cosine noise schedule, sinusoidal time embeddings, and self-attention in the bottleneck
+  </Card>
+  <Card
+    title="CIFAR-10 DDPM"
+    icon="image"
+  >
+    Deeper U-Net with multi-resolution self-attention, dropout regularization, and exponential moving average (EMA) weights
+  </Card>
+  <Card
+    title="DDIM samplers"
+    icon="gauge-high"
+  >
+    Fast deterministic sampling with configurable step counts (10-1000), enabling speed/quality trade-off analysis
+  </Card>
+  <Card
+    title="Training utilities"
+    icon="chart-line"
+  >
+    Reproducible training scripts with early stopping, loss curves, sample visualization, and timestep analysis
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+The core models use a **U-Net architecture** with residual blocks, group normalization, and time conditioning:
+
+```python
+class DiffusionModel(nn.Module):
+    def __init__(self, image_size, channels, hidden_dims=[32, 64, 128], time_dim=128):
+        super().__init__()
+        self.time_mlp = TimeEmbedding(time_dim)
+        self.init_conv = nn.Conv2d(channels, hidden_dims[0], 3, padding=1)
+        
+        # Encoder path with downsampling
+        self.down_blocks = nn.ModuleList([
+            DownBlock(hidden_dims[0], hidden_dims[1], time_dim),
+            DownBlock(hidden_dims[1], hidden_dims[2], time_dim)
+        ])
+        
+        # Bottleneck with self-attention
+        self.bottleneck = BottleneckBlock(hidden_dims[2], time_dim)
+        
+        # Decoder path with skip connections
+        self.up_blocks = nn.ModuleList([
+            UpBlock(hidden_dims[2], hidden_dims[2], hidden_dims[1], time_dim),
+            UpBlock(hidden_dims[1], hidden_dims[1], hidden_dims[0], time_dim)
+        ])
+```
+
+<Note>
+  The model learns to predict the noise that was added to an image at a given timestep, not the clean image directly. This is a key insight from the DDPM paper.
+</Note>
+
+## Design philosophy
+
+This implementation is intentionally kept **minimal and explicit**:
+
+- No hidden training frameworks or complex configuration systems
+- Every modeling decision is visible in the Python files
+- Clear separation between models, training, and utilities
+- Easy to modify and adapt to your own datasets
+
+<CardGroup cols={3}>
+  <Card
+    title="Core models"
+    icon="cube"
+    href="#"
+  >
+    `diffusion.py` and `diffusion_cifar.py` contain the U-Net architectures and diffusion processes
+  </Card>
+  <Card
+    title="Training scripts"
+    icon="dumbbell"
+    href="#"
+  >
+    `train_diffusion.py` and `train_diffusion_cifar.py` handle the training loops with early stopping
+  </Card>
+  <Card
+    title="Utilities"
+    icon="flask"
+    href="#"
+  >
+    DDIM comparisons, interpolation experiments, and timestep analysis scripts
+  </Card>
+</CardGroup>
+
+## What you'll learn
+
+By working through this project, you'll understand:
+
+<Steps>
+  <Step title="Forward diffusion process">
+    How to gradually add Gaussian noise to images using a predefined beta schedule
+  </Step>
+  <Step title="Reverse denoising">
+    How to train a neural network to predict and remove noise step by step
+  </Step>
+  <Step title="U-Net architecture">
+    How to build an encoder-decoder with skip connections, time embeddings, and self-attention
+  </Step>
+  <Step title="Sampling methods">
+    The difference between DDPM (1000 steps) and DDIM (as few as 10 steps) for generation
+  </Step>
+  <Step title="Training best practices">
+    Early stopping, loss monitoring, checkpoint saving, and sample visualization
+  </Step>
+</Steps>
+
+## Theoretical foundation
+
+This implementation is based on two foundational papers:
+
+<AccordionGroup>
+  <Accordion title="Denoising Diffusion Probabilistic Models (Ho et al., NeurIPS 2020)">
+    Introduced the DDPM framework with a fixed forward process and learned reverse process. The model is trained to predict the noise added at each timestep using a simple MSE loss.
+    
+    Key contributions:
+    - Simplified training objective (predict noise, not images)
+    - Cosine beta schedule for better performance
+    - Connection to score-based generative models
+  </Accordion>
+  
+  <Accordion title="Denoising Diffusion Implicit Models (Song et al., ICLR 2021)">
+    Extended DDPM with a deterministic sampling process that allows skipping timesteps without retraining. This enables 10-100x faster generation with minimal quality loss.
+    
+    Key contributions:
+    - Non-Markovian forward process
+    - Deterministic sampling (η=0) for reproducibility
+    - Flexible step counts for speed/quality trade-offs
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Train your first MNIST diffusion model in under 10 minutes
+  </Card>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Set up your environment and install dependencies
+  </Card>
+</CardGroup>

@@ -1,0 +1,284 @@
+---
+title: Noise schedules
+description: Understanding cosine and linear noise schedules and their impact on diffusion model training and sampling
+---
+
+The noise schedule determines how quickly noise is added during the forward diffusion process. This is one of the most important hyperparameters in diffusion models, significantly affecting both training stability and sample quality.
+
+## What is a noise schedule?
+
+A noise schedule defines β_t for each timestep t ∈ [0, T-1]. These values control:
+
+1. **Forward process**: How much noise is added at each step
+2. **Reverse process**: How aggressive the denoising should be
+3. **Training dynamics**: Which noise levels the model focuses on
+
+The schedule defines α_t = 1 - β_t, and the cumulative product:
+
+```
+ᾱ_t = ∏(i=0 to t) α_i
+```
+
+This cumulative product ᾱ_t determines the signal-to-noise ratio at each timestep.
+
+<Info>
+A well-designed schedule ensures that by timestep T, the image is nearly indistinguishable from pure Gaussian noise, while early timesteps retain most of the original signal.
+</Info>
+
+## Linear schedule
+
+The original DDPM paper used a simple linear schedule:
+
+```python src/models/diffusion_cifar.py
+self.beta_schedule = torch.linspace(
+    beta_start,  # typically 1e-4
+    beta_end,    # typically 0.02
+    noise_steps, # typically 1000
+    device=self.device,
+    dtype=torch.float32
+)
+```
+
+This creates uniformly spaced values:
+
+```
+β_0 = 0.0001
+β_1 = 0.0001 + (0.02 - 0.0001)/1000
+β_2 = 0.0001 + 2*(0.02 - 0.0001)/1000
+...
+β_999 = 0.02
+```
+
+### Linear schedule properties
+
+<CardGroup cols={2}>
+  <Card title="Pros" icon="check">
+    - Simple and interpretable
+    - Works well for 32×32 RGB images (CIFAR-10)
+    - Widely used and tested
+  </Card>
+  <Card title="Cons" icon="xmark">
+    - Can destroy too much information early in the process
+    - Suboptimal for high-resolution images
+    - Less efficient noise distribution
+  </Card>
+</CardGroup>
+
+## Cosine schedule
+
+Nichol & Dhariwal (2021) introduced an improved schedule based on cosine functions:
+
+```python src/models/diffusion.py
+def cosine_beta_schedule(timesteps, s=0.008):
+    """
+    Cosine schedule as proposed in 'Improved Denoising Diffusion Probabilistic Models'.
+    """
+    x = torch.linspace(0, timesteps, timesteps + 1, device=self.device)
+    alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 1e-5, 0.02)
+```
+
+Instead of defining β_t directly, this schedule defines ᾱ_t using a cosine function, then derives β_t:
+
+```
+ᾱ_t = cos²(π/2 · (t/T + s)/(1 + s))
+β_t = 1 - ᾱ_t/ᾱ_{t-1}
+```
+
+### Why cosine?
+
+The cosine schedule allocates noise more efficiently:
+
+1. **Slower initial corruption**: Early timesteps add less noise, preserving more information
+2. **Smoother progression**: The rate of noise addition changes gradually
+3. **Better final noise level**: Ensures x_T is truly close to N(0, I)
+
+<Tip>
+The offset parameter `s=0.008` prevents the schedule from starting/ending at exactly 0 or 1, which can cause numerical instabilities.
+</Tip>
+
+## Visualization
+
+Here's how the two schedules compare:
+
+```python
+import torch
+import matplotlib.pyplot as plt
+
+# Linear schedule
+beta_linear = torch.linspace(1e-4, 0.02, 1000)
+alpha_linear = 1 - beta_linear
+alpha_bar_linear = torch.cumprod(alpha_linear, dim=0)
+
+# Cosine schedule  
+def cosine_schedule(T, s=0.008):
+    x = torch.linspace(0, T, T + 1)
+    alpha_bar = torch.cos(((x / T) + s) / (1 + s) * math.pi * 0.5) ** 2
+    alpha_bar = alpha_bar / alpha_bar[0]
+    return alpha_bar[1:]
+
+alpha_bar_cosine = cosine_schedule(1000)
+
+plt.plot(alpha_bar_linear.numpy(), label='Linear')
+plt.plot(alpha_bar_cosine.numpy(), label='Cosine')
+plt.xlabel('Timestep t')
+plt.ylabel('ᾱ_t (cumulative signal retention)')
+plt.legend()
+plt.title('Cosine vs Linear Noise Schedule')
+```
+
+<Note>
+The cosine schedule maintains higher ᾱ_t values in early timesteps, meaning it preserves more signal early in the diffusion process.
+</Note>
+
+## Implementation in the codebase
+
+### MNIST uses cosine schedule
+
+```python src/models/diffusion.py
+class DiffusionProcess:
+    def __init__(self, image_size, channels, hidden_dims=[32, 64, 128], 
+                 beta_start=1e-4, beta_end=0.02, noise_steps=1000, device=...):
+        # Cosine beta schedule
+        def cosine_beta_schedule(timesteps, s=0.008):
+            x = torch.linspace(0, timesteps, timesteps + 1, device=self.device)
+            alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
+            alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+            betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+            return torch.clip(betas, 1e-5, 0.02)
+        
+        self.beta_schedule = cosine_beta_schedule(noise_steps).to(self.device)
+```
+
+### CIFAR-10 uses linear schedule
+
+```python src/models/diffusion_cifar.py
+class DiffusionProcessCIFAR(DiffusionProcess):
+    def __init__(self, ...):
+        super().__init__(...)
+        
+        # Replace cosine schedule with linear for CIFAR-10
+        self.beta_schedule = torch.linspace(
+            beta_start, beta_end, noise_steps, 
+            device=self.device, dtype=torch.float32
+        )
+        self.alpha_schedule = 1.0 - self.beta_schedule
+        self.alpha_cumprod = torch.cumprod(self.alpha_schedule, dim=0)
+        self.sqrt_alpha_cumprod = torch.sqrt(self.alpha_cumprod)
+        self.sqrt_one_minus_alpha_cumprod = torch.sqrt(1.0 - self.alpha_cumprod)
+```
+
+<Info>
+The codebase uses **cosine for MNIST** (28×28 grayscale) and **linear for CIFAR-10** (32×32 RGB). This follows common practices from the original papers.
+</Info>
+
+## Choosing the right schedule
+
+### Use cosine schedule when:
+- Working with small images (28×28, 32×32)
+- Training on grayscale or simple datasets
+- You want improved sample quality with minimal changes
+- Following recent best practices (post-2021)
+
+### Use linear schedule when:
+- Replicating original DDPM results
+- Working with well-established CIFAR-10 benchmarks
+- You need exact reproducibility with prior work
+
+### For new projects:
+Start with **cosine schedule** as it generally provides better results with the same computational cost.
+
+<Warning>
+Changing the noise schedule requires retraining the model from scratch. You cannot simply swap schedules and use an existing checkpoint.
+</Warning>
+
+## Advanced: Custom schedules
+
+You can define custom schedules for specific needs:
+
+```python
+def quadratic_beta_schedule(timesteps, beta_start=1e-4, beta_end=0.02):
+    """Quadratic schedule for slower early corruption."""
+    t = torch.linspace(0, 1, timesteps)
+    betas = beta_start + (beta_end - beta_start) * t ** 2
+    return betas
+
+def sigmoid_beta_schedule(timesteps, beta_start=1e-4, beta_end=0.02):
+    """Sigmoid schedule for smooth transitions."""
+    t = torch.linspace(-6, 6, timesteps)
+    betas = beta_start + (beta_end - beta_start) * torch.sigmoid(t)
+    return betas
+```
+
+<Tip>
+When designing custom schedules, ensure that:
+1. β_t ∈ (0, 1) for all t
+2. β_t increases monotonically (generally)
+3. ᾱ_T ≈ 0 (image becomes pure noise by the end)
+</Tip>
+
+## Impact on training
+
+The noise schedule affects which timesteps the model sees during training:
+
+```python src/models/diffusion.py
+# Random timesteps are sampled uniformly
+t = torch.randint(0, self.noise_steps, (x.shape[0],), device=self.device)
+```
+
+With uniform sampling, the schedule determines the distribution of noise levels:
+- **Linear schedule**: More examples at high noise levels
+- **Cosine schedule**: More balanced distribution across noise levels
+
+## Schedule precomputation
+
+Both schedules precompute derived quantities for efficiency:
+
+```python src/models/diffusion.py
+# Precompute all schedule-dependent values
+self.beta_schedule = cosine_beta_schedule(noise_steps).to(self.device)
+self.alpha_schedule = (1.0 - self.beta_schedule).to(self.device)
+self.alpha_cumprod = torch.cumprod(self.alpha_schedule, dim=0).to(self.device)
+self.sqrt_alpha_cumprod = torch.sqrt(self.alpha_cumprod).to(self.device)
+self.sqrt_one_minus_alpha_cumprod = torch.sqrt(1.0 - self.alpha_cumprod).to(self.device)
+```
+
+These precomputed tensors are indexed during training:
+
+```python src/models/diffusion.py
+sqrt_alpha_cumprod_t = self.sqrt_alpha_cumprod[t].view(-1, 1, 1, 1)
+sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t].view(-1, 1, 1, 1)
+x_t = sqrt_alpha_cumprod_t * x + sqrt_one_minus_alpha_cumprod_t * noise
+```
+
+## Posterior variance calculation
+
+For CIFAR-10, the linear schedule also precomputes posterior variance for DDPM sampling:
+
+```python src/models/diffusion_cifar.py
+# Posterior coefficients q(x_{t-1} | x_t, x_0)
+alpha_cumprod_prev = torch.cat(
+    [torch.ones(1, device=self.device), self.alpha_cumprod[:-1]], dim=0
+)
+self.posterior_variance = (
+    self.beta_schedule * (1.0 - alpha_cumprod_prev) / (1.0 - self.alpha_cumprod)
+)
+self.posterior_log_variance_clipped = torch.log(
+    torch.cat([self.posterior_variance[1:2], self.posterior_variance[1:]], dim=0)
+)
+```
+
+These values are used during sampling to compute the correct noise variance at each step.
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="Diffusion process" icon="wave" href="/concepts/diffusion-process">
+    See how schedules affect forward/reverse processes
+  </Card>
+  <Card title="DDPM" icon="chart-line" href="/concepts/ddpm">
+    Learn about the DDPM algorithm using these schedules
+  </Card>
+</CardGroup>

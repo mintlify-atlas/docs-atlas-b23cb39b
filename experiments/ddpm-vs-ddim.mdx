@@ -1,0 +1,182 @@
+---
+title: DDPM vs DDIM comparison
+description: Comparing DDPM and DDIM samplers for speed and quality tradeoffs
+---
+
+This experiment compares the original DDPM sampler with the faster DDIM sampler across both MNIST and CIFAR-10 datasets to understand the speed-quality tradeoff.
+
+## Overview
+
+DDIM (Denoising Diffusion Implicit Models) enables deterministic sampling and can skip timesteps, allowing for much faster generation compared to DDPM which requires all 1000 steps. The comparison tests DDIM with various step counts: 10, 20, 50, 100, 250, 500, and 1000 steps.
+
+<Note>
+DDIM with η=0 produces deterministic samples, unlike the stochastic DDPM sampler. This makes generation reproducible while maintaining quality.
+</Note>
+
+## Running the comparison
+
+The project includes dedicated comparison scripts for both datasets:
+
+### MNIST comparison
+
+```bash
+python src/utilities/ddim_comparison_mnist.py
+```
+
+This script (src/utilities/ddim_comparison_mnist.py:20-86):
+- Loads the trained MNIST model from `best_model.pt`
+- Benchmarks DDPM sampling with 1000 steps
+- Tests DDIM with 7 different step configurations
+- Measures timing and calculates speedup ratios
+- Generates visual comparisons and timing charts
+
+### CIFAR-10 comparison
+
+```bash
+python src/utilities/ddim_comparison_cifar.py
+```
+
+The CIFAR-10 version uses the same methodology but with the EMA model weights for more stable sampling.
+
+## Key findings
+
+### MNIST results
+
+Based on the analysis in src/utilities/ddim_comparison_mnist.py:198-222:
+
+**Speed improvements:**
+- DDIM-10: Fastest speedup (typically 80-100x)
+- DDIM-50: Balanced speedup (~20x) with good quality
+- DDIM-100: High quality at ~10x speedup
+- DDIM-250+: Near-DDPM quality at 4x+ speedup
+
+**Quality vs speed tradeoff:**
+- 10 steps: Very fast but may show artifacts
+- 50 steps: Good balance of speed and quality
+- 100 steps: High quality with significant speedup
+- 250+ steps: Approaching DDPM quality
+
+<Info>
+For MNIST, the optimal sweet spot is **50-100 DDIM steps**, providing excellent quality at 10-20x speedup over DDPM.
+</Info>
+
+### CIFAR-10 results
+
+CIFAR-10 is more complex than MNIST and requires more steps for comparable quality (src/utilities/ddim_comparison_cifar.py:199-226):
+
+**Step requirements:**
+- Minimum viable: ~50-100 steps for recognizable images
+- Recommended: 100-250 steps for production quality
+- DDPM baseline: 1000 steps required
+
+**Optimal tradeoff:**
+For CIFAR-10, **100-250 DDIM steps** provide the best balance, offering 4-10x speedup while maintaining strong image quality.
+
+<Warning>
+CIFAR-10's higher complexity means you'll need more DDIM steps than MNIST for comparable quality. Don't expect 10-step sampling to work well on natural images.
+</Warning>
+
+## Generated outputs
+
+Both comparison scripts generate comprehensive analysis outputs:
+
+### Visual comparisons
+
+1. **quality_comparison.png**: Side-by-side grids showing DDPM and DDIM samples at various step counts
+2. **timing_analysis.png**: Two charts showing:
+   - Bar chart of sampling time for each configuration
+   - Line plot of speedup ratio vs number of steps
+
+### Sample grids
+
+Individual sample grids are saved for each configuration:
+- `ddpm_samples.png`: DDPM baseline (1000 steps)
+- `ddim_10_samples.png` through `ddim_1000_samples.png`: DDIM at each tested step count
+
+### Analysis report
+
+A detailed text report (`analysis_report.txt`) summarizes:
+- Sampling speed measurements
+- Quality vs speed tradeoffs
+- Key findings and recommendations
+- Step requirement analysis
+
+All outputs are saved to:
+- `ddim_comparison_mnist/` for MNIST results
+- `ddim_comparison_cifar/` for CIFAR-10 results
+
+## Understanding the code
+
+The comparison scripts follow a consistent structure (src/utilities/ddim_comparison_mnist.py:50-86):
+
+```python
+# Storage for results
+results = {
+    "ddpm": {"time": None, "samples": None, "steps": 1000},
+    "ddim": {}
+}
+
+# Benchmark DDPM baseline
+start_time = time.time()
+ddpm_samples = diffusion.sample(num_samples=num_samples)
+ddpm_time = time.time() - start_time
+
+# Benchmark DDIM with various step counts
+for steps in ddim_step_configs:
+    start_time = time.time()
+    ddim_samples = diffusion.sample_ddim(
+        num_samples=num_samples, 
+        ddim_steps=steps, 
+        eta=0.0  # Deterministic sampling
+    )
+    ddim_time = time.time() - start_time
+    speedup = ddpm_time / ddim_time
+```
+
+The `eta=0.0` parameter makes DDIM fully deterministic, while `eta=1.0` would recover DDPM-like stochastic behavior.
+
+## Deterministic vs stochastic sampling
+
+One key advantage of DDIM is deterministic sampling:
+
+- **DDPM**: Adds random noise at each step, making each run different
+- **DDIM (η=0)**: Fully deterministic given the same starting noise
+- **DDIM (η=1)**: Recovers DDPM's stochastic behavior
+
+This determinism is useful for:
+- Reproducible generation
+- Interpolation between latents
+- Debugging and analysis
+
+## Performance benchmarks
+
+The scripts measure both total time and per-sample time:
+
+```python
+print(f"Completed in {ddpm_time:.2f}s ({ddpm_time/num_samples:.3f}s per sample)")
+print(f"Speedup: {speedup:.2f}x faster than DDPM")
+```
+
+Speedup scales roughly inversely with step count:
+- 1000 steps → 1x (DDPM baseline)
+- 100 steps → ~10x speedup
+- 50 steps → ~20x speedup
+- 10 steps → ~100x speedup
+
+## Practical recommendations
+
+### For MNIST
+
+- **Fast preview**: 20-50 steps
+- **Production quality**: 50-100 steps
+- **Maximum quality**: 250+ steps
+
+### For CIFAR-10
+
+- **Fast preview**: 50-100 steps
+- **Production quality**: 100-250 steps
+- **Maximum quality**: 500+ steps
+
+### General guidance
+
+More complex datasets require more steps for high quality. Start with 100 steps and adjust based on your speed vs quality requirements.

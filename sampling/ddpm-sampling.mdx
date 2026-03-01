@@ -1,0 +1,191 @@
+---
+title: DDPM sampling
+description: Standard DDPM sampling process for generating images from noise
+---
+
+DDPM (Denoising Diffusion Probabilistic Models) sampling is the core reverse diffusion process that generates images by iteratively denoising pure Gaussian noise over T timesteps.
+
+## How DDPM sampling works
+
+The sampling process starts with random noise $x_T \sim \mathcal{N}(0, I)$ and gradually denoises it by reversing the forward diffusion process:
+
+1. **Start with pure noise**: Sample $x_T$ from a standard Gaussian distribution
+2. **Iterative denoising**: For each timestep $t$ from $T$ to $1$, predict the noise and compute $x_{t-1}$
+3. **Final output**: Return the denoised image $x_0$
+
+The denoising step computes the posterior mean and adds variance:
+
+$$
+x_{t-1} = \frac{1}{\sqrt{\alpha_t}} \left( x_t - \frac{\beta_t}{\sqrt{1 - \bar{\alpha}_t}} \epsilon_\theta(x_t, t) \right) + \sigma_t z
+$$
+
+where $z \sim \mathcal{N}(0, I)$ and $\sigma_t = \sqrt{\beta_t}$.
+
+## Implementation
+
+Here's the complete DDPM sampling implementation from `src/models/diffusion.py:75`:
+
+```python
+def sample(self, num_samples=16):
+    """
+    Generate new samples by reversing the diffusion process.
+    Args:
+        num_samples: Number of samples to generate
+    Returns:
+        Generated images tensor
+    """
+    self.model.eval()
+    with torch.no_grad():
+        # 1. Start with random noise
+        x_t = torch.randn(num_samples, self.model.channels, 
+                        self.model.image_size, self.model.image_size,
+                        device=self.device)
+        
+        # 2. Gradually denoise the samples by iterating through timesteps in reverse
+        for t in reversed(range(self.noise_steps)):
+            t_batch = torch.full((num_samples,), t, device=self.device, dtype=torch.long)
+            predicted_noise = self.model(x_t, t_batch)
+
+            # Retrieve schedule values 
+            beta_t = self.beta_schedule[t]
+            alpha_t = self.alpha_schedule[t]
+            alpha_cumprod_t = self.alpha_cumprod[t]
+            sqrt_alpha_cumprod_t = self.sqrt_alpha_cumprod[t]
+            sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t]
+            sqrt_recip_alpha_t = 1.0 / torch.sqrt(alpha_t)
+
+            # Compute x_{t-1}
+            model_mean = sqrt_recip_alpha_t * ( 
+                x_t - (beta_t / sqrt_one_minus_alpha_cumprod_t) * predicted_noise)
+            
+            if t > 0:
+                noise = torch.randn_like(x_t)
+                sigma_t = torch.sqrt(beta_t)
+                x_t = model_mean + sigma_t * noise
+            else:
+                x_t = model_mean
+
+        # 3. Return the generated samples - clamp only at the end
+        result = torch.clamp(x_t, -1, 1)
+    
+    self.model.train()
+    return result
+```
+
+## Usage example
+
+<Steps>
+  <Step title="Create diffusion process">
+    Initialize the diffusion model with trained weights:
+
+    ```python
+    from src.models.diffusion import DiffusionProcess
+    import torch
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    diffusion = DiffusionProcess(
+        image_size=28,
+        channels=1,
+        hidden_dims=[128, 256, 512],
+        noise_steps=1000,
+        device=device
+    )
+
+    # Load trained weights
+    diffusion.model.load_state_dict(torch.load('best_model.pt'))
+    ```
+  </Step>
+
+  <Step title="Generate samples">
+    Call the `sample()` method to generate images:
+
+    ```python
+    # Generate 16 samples
+    samples = diffusion.sample(num_samples=16)
+    
+    # samples shape: (16, 1, 28, 28) for MNIST
+    # Values are in range [-1, 1]
+    ```
+  </Step>
+
+  <Step title="Visualize results">
+    Convert to images and save:
+
+    ```python
+    from torchvision.utils import save_image
+    
+    # Normalize from [-1, 1] to [0, 1]
+    samples = (samples + 1) / 2
+    save_image(samples, 'samples.png', nrow=4)
+    ```
+  </Step>
+</Steps>
+
+## CIFAR-10 variant with EMA
+
+The CIFAR-10 implementation uses exponential moving average (EMA) parameters for better sample quality. From `src/models/diffusion_cifar.py:326`:
+
+```python
+def sample(self, num_samples=16):
+    """
+    DDPM sampling using the EMA parameters for better image quality.
+    """
+    model = self.ema_model  # Use EMA weights instead of training weights
+    was_training = model.training
+    model.eval()
+
+    with torch.no_grad():
+        x_t = torch.randn(
+            num_samples,
+            self.model.channels,
+            self.model.image_size,
+            self.model.image_size,
+            device=self.device,
+        )
+        for t in reversed(range(self.noise_steps)):
+            t_batch = torch.full(
+                (num_samples,), t, device=self.device, dtype=torch.long
+            )
+            eps_pred = model(x_t, t_batch)
+            
+            # Reconstruct x_0 from ε and x_t (DDPM parameterization)
+            sqrt_alpha_cumprod_t = self.sqrt_alpha_cumprod[t]
+            sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t]
+            x0_pred = (
+                x_t - sqrt_one_minus_alpha_cumprod_t * eps_pred
+            ) / sqrt_alpha_cumprod_t
+            x0_pred = torch.clamp(x0_pred, -1.0, 1.0)
+
+            # Posterior mean using precomputed coefficients
+            coef1 = self.posterior_mean_coef1[t]
+            coef2 = self.posterior_mean_coef2[t]
+            model_mean = coef1 * x0_pred + coef2 * x_t
+            
+            if t > 0:
+                var = self.posterior_variance[t]
+                noise = torch.randn_like(x_t)
+                x_t = model_mean + torch.sqrt(var) * noise
+            else:
+                x_t = model_mean
+            
+        x_t = torch.clamp(x_t, -1.0, 1.0)
+    
+    if was_training:
+        model.train()
+    return x_t
+```
+
+<Note>
+The CIFAR-10 variant precomputes posterior variance coefficients for efficiency, while the base implementation computes them on the fly.
+</Note>
+
+## Key characteristics
+
+- **Stochastic**: Each sampling run produces different results due to random noise injection at each step
+- **Slow**: Requires all T timesteps (typically 1000) for full quality
+- **High quality**: Produces the best sample quality when using all timesteps
+- **No variance at t=0**: The final step is deterministic (no noise added)
+
+<Tip>
+For faster sampling with minimal quality loss, use DDIM sampling instead, which can skip timesteps while maintaining deterministic trajectories.
+</Tip>

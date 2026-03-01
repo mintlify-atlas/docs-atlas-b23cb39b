@@ -1,0 +1,454 @@
+---
+title: Interpolation and timesteps utility
+description: Analyze per-timestep loss and generate noise interpolation visualizations
+---
+
+The interpolation utility provides diagnostic tools for analyzing diffusion model behavior across timesteps and visualizing smooth interpolations in latent noise space.
+
+## Overview
+
+This utility offers three main capabilities:
+
+1. **Per-timestep loss analysis**: Measure noise prediction error across diffusion timesteps
+2. **DDPM noise interpolation**: Generate smooth transitions between random noise vectors
+3. **DDIM noise interpolation**: Deterministic interpolation using DDIM sampling
+
+## Usage
+
+Run the script directly to generate interpolation grids:
+
+```bash
+python src/utilities/interpolation_and_timesteps.py
+```
+
+### Prerequisites
+
+- Trained MNIST model at `best_model.pt` in project root
+- MNIST dataset will be downloaded automatically if not present
+
+### Expected outputs
+
+All outputs are saved to `samples/`:
+
+1. **interp.png**: DDPM stochastic interpolation grid (8×9)
+2. **interp_ddim.png**: DDIM deterministic interpolation grid (8×9)
+3. **Timestep loss plot**: matplotlib figure showing error vs timestep buckets
+
+## Functions
+
+### per_timestep_loss
+
+Analyzes noise prediction error across diffusion timesteps by bucketing and averaging losses.
+
+**Signature** (from `interpolation_and_timesteps.py:23-58`):
+
+```python
+@torch.no_grad()
+def per_timestep_loss(
+    diffusion,
+    loader,
+    num_batches=10,
+    buckets=10,
+    device='cuda'
+) -> torch.Tensor
+```
+
+**Parameters:**
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `diffusion` | `DiffusionProcess` | Trained diffusion model | Required |
+| `loader` | `DataLoader` | PyTorch data loader with real images | Required |
+| `num_batches` | `int` | Number of batches to evaluate | 10 |
+| `buckets` | `int` | Number of timestep buckets (T/buckets per bucket) | 10 |
+| `device` | `str` | Compute device | `'cuda'` |
+
+**Returns:** `torch.Tensor` of shape `(buckets,)` containing average MSE loss per bucket
+
+**Implementation:**
+
+1. Splits timesteps 0-999 into equal buckets (e.g., 10 buckets = 100 steps each)
+2. For each batch:
+   - Sample random timesteps `t` uniformly from [0, T)
+   - Add noise: `x_t, noise = diffusion.add_noise(x, t)`
+   - Predict noise: `pred = model(x_t, t)`
+   - Compute per-sample MSE: `((pred - noise)**2).mean(dim=(1,2,3))`
+   - Accumulate into appropriate bucket based on `t`
+3. Average losses across batches
+4. Plot bar chart showing error vs timestep range
+
+**Example:**
+
+```python
+losses = per_timestep_loss(
+    diffusion,
+    train_loader,
+    num_batches=20,
+    buckets=10,
+    device='cuda'
+)
+# losses[0]: average loss for timesteps 0-99
+# losses[1]: average loss for timesteps 100-199
+# ...
+# losses[9]: average loss for timesteps 900-999
+```
+
+**Plot output:**
+
+Generates a matplotlib figure with:
+- X-axis: Timestep buckets (e.g., "0-99", "100-199", ...)
+- Y-axis: MSE (ε-prediction error)
+- Title: "Noise-prediction error vs timestep"
+
+### sample_from_xt
+
+Generates samples using standard DDPM stochastic reverse process from initial noise.
+
+**Signature** (from `interpolation_and_timesteps.py:60-73`):
+
+```python
+@torch.no_grad()
+def sample_from_xt(diffusion, x_T) -> torch.Tensor
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `diffusion` | `DiffusionProcess` | Trained diffusion model |
+| `x_T` | `torch.Tensor` | Initial noise of shape `(B, C, H, W)` |
+
+**Returns:** `torch.Tensor` of generated images (same shape as `x_T`)
+
+**Implementation:**
+
+Performs full 1000-step DDPM reverse diffusion:
+
+```python
+for t in reversed(range(T)):  # T=1000 down to 0
+    pred_eps = model(x_t, t)
+    # Compute mean of p(x_{t-1} | x_t)
+    x_t = (1/√α_t) * (x_t - (β_t / √(1-ᾱ_t)) * pred_eps)
+    # Add noise if not final step
+    if t > 0:
+        x_t += √β_t * ε,  ε ~ N(0, I)
+```
+
+This follows the DDPM sampling algorithm from Ho et al. (2020).
+
+### interpolate_noise_and_generate
+
+Generates an interpolation grid by linearly interpolating between two random noise vectors and sampling with DDPM.
+
+**Signature** (from `interpolation_and_timesteps.py:75-95`):
+
+```python
+@torch.no_grad()
+def interpolate_noise_and_generate(
+    diffusion,
+    n=8,
+    steps=7,
+    save_path='interp.png'
+) -> str
+```
+
+**Parameters:**
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `diffusion` | `DiffusionProcess` | Trained diffusion model | Required |
+| `n` | `int` | Number of parallel interpolations (rows) | 8 |
+| `steps` | `int` | Number of interpolation steps (columns) | 7 |
+| `save_path` | `str` | Output path for grid image | `'interp.png'` |
+
+**Returns:** `str` path to saved image
+
+**Implementation:**
+
+1. Generate two random noise endpoints: `z0, z1 ~ N(0, I)`
+2. Create linear interpolation: `z_α = (1-α)z0 + αz1` for `α ∈ [0, 1]`
+3. Sample from each interpolated noise: `x = sample_from_xt(diffusion, z_α)`
+4. Arrange as grid with `n` rows and `steps` columns
+5. Save to `save_path` using torchvision.utils.save_image
+
+**Example:**
+
+```python
+path = interpolate_noise_and_generate(
+    diffusion,
+    n=8,
+    steps=9,
+    save_path='samples/interp.png'
+)
+# Creates 8x9 grid showing smooth transitions
+# Each row is independent interpolation
+# Each column represents α from 0.0 to 1.0
+```
+
+**Grid structure:**
+
+```
+Row 1: z0[0] -----(α)-----> z1[0]
+Row 2: z0[1] -----(α)-----> z1[1]
+...
+Row n: z0[n] -----(α)-----> z1[n]
+       ↑                      ↑
+    α=0.0                  α=1.0
+```
+
+### ddim_sample_from_xt
+
+Generates samples using deterministic DDIM reverse process (η=0) from initial noise.
+
+**Signature** (from `interpolation_and_timesteps.py:97-112`):
+
+```python
+@torch.no_grad()
+def ddim_sample_from_xt(diffusion, x_T) -> torch.Tensor
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `diffusion` | `DiffusionProcess` | Trained diffusion model |
+| `x_T` | `torch.Tensor` | Initial noise of shape `(B, C, H, W)` |
+
+**Returns:** `torch.Tensor` of generated images (same shape as `x_T`)
+
+**Implementation:**
+
+Performs deterministic DDIM sampling with η=0:
+
+```python
+for t in reversed(range(T)):
+    eps_hat = model(x_t, t)
+    # Predict x_0 from x_t
+    x0_hat = (x_t - √(1-ᾱ_t) * eps_hat) / √ᾱ_t
+    # Deterministic update to x_{t-1}
+    if t > 0:
+        x_t = √ᾱ_{t-1} * x0_hat + √(1-ᾱ_{t-1}) * eps_hat
+    else:
+        x_t = x0_hat
+```
+
+This is the deterministic formulation from Song et al. (2020), enabling:
+- **Consistency**: Same `x_T` always produces same `x_0`
+- **Invertibility**: Can encode images back to noise
+- **Interpolation**: Smooth transitions in latent space
+
+### interpolate_noise_and_generate_ddim
+
+Generates an interpolation grid using deterministic DDIM sampling.
+
+**Signature** (from `interpolation_and_timesteps.py:114-139`):
+
+```python
+@torch.no_grad()
+def interpolate_noise_and_generate_ddim(
+    diffusion,
+    n=8,
+    steps=7,
+    save_path="interp.png"
+) -> str
+```
+
+**Parameters:**
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `diffusion` | `DiffusionProcess` | Trained diffusion model | Required |
+| `n` | `int` | Number of parallel interpolations (rows) | 8 |
+| `steps` | `int` | Number of interpolation steps (columns) | 7 |
+| `save_path` | `str` | Output path for grid image | `"interp.png"` |
+
+**Returns:** `str` path to saved image
+
+**Difference from DDPM version:**
+
+Uses `ddim_sample_from_xt()` instead of `sample_from_xt()`, providing:
+- **Deterministic output**: No randomness in reverse process
+- **Smoother interpolations**: Consistent mapping from noise to images
+- **Better quality**: Determinism often produces cleaner transitions
+
+**Example:**
+
+```python
+path = interpolate_noise_and_generate_ddim(
+    diffusion,
+    n=8,
+    steps=9,
+    save_path='samples/interp_ddim.png'
+)
+# Creates 8x9 deterministic interpolation grid
+# Compare with DDPM version to see smoothness difference
+```
+
+## Main script execution
+
+When run as `__main__`, the script (from `interpolation_and_timesteps.py:142-193`):
+
+### Initialization
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+diffusion = DiffusionProcess(
+    image_size=28,
+    channels=1,
+    hidden_dims=[128, 256, 512],
+    device=device,
+)
+
+# Load trained model
+ckpt_path = "best_model.pt"
+diffusion.model.load_state_dict(torch.load(ckpt_path, map_location=device))
+diffusion.model.eval()
+```
+
+### Dataset loading
+
+```python
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,)),
+])
+dataset = datasets.MNIST(
+    root="data",
+    train=False,
+    download=True,
+    transform=transform,
+)
+loader = DataLoader(dataset, batch_size=64, shuffle=True)
+```
+
+### Analysis and generation
+
+1. **Timestep loss diagnostic** (optional, displays matplotlib plot):
+   ```python
+   _ = per_timestep_loss(
+       diffusion, loader, num_batches=10, buckets=10, device=device
+   )
+   ```
+
+2. **DDPM interpolation grid**:
+   ```python
+   interpolate_noise_and_generate(
+       diffusion,
+       n=8,
+       steps=9,
+       save_path="samples/interp.png",
+   )
+   ```
+
+3. **DDIM interpolation grid**:
+   ```python
+   interpolate_noise_and_generate_ddim(
+       diffusion,
+       n=8,
+       steps=9,
+       save_path="samples/interp_ddim.png",
+   )
+   ```
+
+## Output examples
+
+### Timestep loss plot
+
+Typical loss pattern shows higher error at middle timesteps:
+
+```
+      Loss
+       ↑
+  0.05 |     ╭─╮
+       |    ╱   ╲
+  0.03 |   ╱     ╲
+       |  ╱       ╲___
+  0.01 |_╱____________╲_____
+       └────────────────────→
+       0-99  ...  900-999
+            Timestep bucket
+```
+
+This indicates the model has more difficulty predicting noise in mid-diffusion timesteps.
+
+### Interpolation grid structure
+
+**File:** `samples/interp.png` (DDPM) or `samples/interp_ddim.png` (DDIM)
+
+**Dimensions:** 8 rows × 9 columns = 72 total images
+
+**Interpretation:**
+- Each row: Independent interpolation between two random endpoints
+- Left column (α=0.0): First random noise vector endpoint
+- Right column (α=1.0): Second random noise vector endpoint
+- Middle columns: Linear interpolation in noise space
+- Smooth semantic transitions demonstrate learned manifold structure
+
+### DDPM vs DDIM comparison
+
+**DDPM (`interp.png`):**
+- Stochastic sampling adds noise at each step
+- Slight variations in intermediate steps
+- May show more diversity but less smoothness
+
+**DDIM (`interp_ddim.png`):**
+- Deterministic sampling (η=0)
+- Perfectly smooth transitions
+- Consistent and reproducible interpolations
+- Generally cleaner visual quality
+
+## Use cases
+
+### Diagnostic analysis
+
+Use `per_timestep_loss()` to:
+- Identify problematic timestep ranges during training
+- Validate that model learns all diffusion stages
+- Compare different model architectures or hyperparameters
+- Debug training issues (e.g., collapsed loss at certain timesteps)
+
+### Interpolation visualization
+
+Use interpolation functions to:
+- Demonstrate learned latent space structure
+- Generate smooth transitions between concepts
+- Create visualizations for papers or presentations
+- Validate model quality (smooth interpolations = good generalization)
+- Compare DDPM vs DDIM sampling quality
+
+### Research applications
+
+- **Latent space exploration**: Understand what the model learns
+- **Semantic interpolation**: Find meaningful directions in noise space
+- **Model comparison**: Evaluate different training configurations
+- **Quality metrics**: Smooth interpolations correlate with sample quality
+
+## Performance notes
+
+### Computational cost
+
+- `per_timestep_loss()`: Fast, ~1-2 minutes for 10 batches
+- `interpolate_noise_and_generate()`: Slow, ~8-10 minutes for 8×9 grid (requires 72 full DDPM samplings)
+- `interpolate_noise_and_generate_ddim()`: Same as DDPM, ~8-10 minutes (full 1000 steps)
+
+To speed up DDIM interpolation, use accelerated DDIM in production:
+
+```python
+# In diffusion model, add fast DDIM method:
+def sample_ddim_fast(self, x_T, ddim_steps=50):
+    # Use only subset of timesteps
+    pass
+
+# Then use in interpolation:
+def interpolate_noise_fast(diffusion, x_T, ddim_steps=50):
+    # Only ~1 minute instead of 10 for same quality
+    pass
+```
+
+## Related functions
+
+- `DiffusionProcess.add_noise()`: Forward diffusion noise addition
+- `DiffusionProcess.sample()`: Standard DDPM sampling
+- `DiffusionProcess.sample_ddim()`: Accelerated DDIM sampling
+- See [Diffusion process](./diffusion) for core diffusion operations

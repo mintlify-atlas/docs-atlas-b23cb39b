@@ -1,0 +1,295 @@
+---
+title: DDIM comparison scripts
+description: Benchmark DDIM vs DDPM sampling speed and quality for MNIST and CIFAR-10
+---
+
+The DDIM comparison utilities analyze sampling performance between DDIM (Denoising Diffusion Implicit Models) and DDPM (Denoising Diffusion Probabilistic Models) across different step configurations.
+
+## Overview
+
+These scripts compare:
+- **Sampling speed**: Time taken for different step counts
+- **Quality**: Visual comparison of generated samples
+- **Speedup**: Performance gains from fewer diffusion steps
+- **Step requirements**: Minimum viable steps for quality output
+
+## MNIST comparison
+
+Compares DDPM (1000 steps) vs DDIM with various step counts (10, 20, 50, 100, 250, 500, 1000) on MNIST dataset.
+
+### Usage
+
+```bash
+python src/utilities/ddim_comparison_mnist.py
+```
+
+### Prerequisites
+
+- Trained MNIST model at `best_model.pt` in project root
+- Run `python train_diffusion.py` to train the model first
+
+### Configuration
+
+The script uses these default settings from `ddim_comparison_mnist.py:21-34`:
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+image_size = 28
+channels = 1
+num_samples = 16
+output_dir = "ddim_comparison_mnist"
+
+# Initialize diffusion with hidden_dims matching trained model
+diffusion = DiffusionProcess(
+    image_size=28,
+    channels=1,
+    hidden_dims=[128, 256, 512],
+    noise_steps=1000,
+    device=device
+)
+```
+
+### DDIM step configurations
+
+Tested configurations from `ddim_comparison_mnist.py:47`:
+
+```python
+ddim_step_configs = [10, 20, 50, 100, 250, 500, 1000]
+```
+
+### Expected outputs
+
+All outputs are saved to `ddim_comparison_mnist/`:
+
+1. **quality_comparison.png**: 2x4 grid showing DDPM and DDIM samples at different step counts
+2. **timing_analysis.png**: Two charts comparing sampling time and speedup vs steps
+3. **analysis_report.txt**: Detailed analysis of speed-quality tradeoffs
+4. **ddpm_samples.png**: DDPM generated samples (1000 steps)
+5. **ddim_X_samples.png**: DDIM samples for each step configuration (10, 20, 50, etc.)
+
+### Sample output
+
+The script produces detailed progress output:
+
+```
+============================================================
+SAMPLING COMPARISON: DDPM vs DDIM
+============================================================
+
+[1/8] Running DDPM sampling (1000 steps)...
+   ✓ Completed in 12.34s (0.771s per sample)
+
+[2/8] Running DDIM sampling (10 steps)...
+   ✓ Completed in 0.56s (0.035s per sample)
+   ⚡ Speedup: 22.04x faster than DDPM
+
+[3/8] Running DDIM sampling (20 steps)...
+   ✓ Completed in 1.12s (0.070s per sample)
+   ⚡ Speedup: 11.02x faster than DDPM
+...
+```
+
+### Key findings
+
+From the analysis report (see `ddim_comparison_mnist.py:196-222`):
+
+- **DDIM-10**: Fastest (20x+) but may show artifacts
+- **DDIM-50**: Good balance of speed (10-15x) and quality
+- **DDIM-100**: High quality with 8-10x speedup
+- **DDIM-250+**: Approaching DDPM quality with 3-5x speedup
+- **Optimal tradeoff**: 50-100 steps for production MNIST
+
+## CIFAR-10 comparison
+
+Compares DDPM vs DDIM on CIFAR-10, a more complex natural image dataset requiring more steps for quality.
+
+### Usage
+
+```bash
+python src/utilities/ddim_comparison_cifar.py
+```
+
+### Prerequisites
+
+- Trained CIFAR-10 EMA model at `best_model_cifar.pt` in project root
+- Run `python diffusion_cifar.py` to train the model first
+
+### Configuration
+
+The script uses these settings from `ddim_comparison_cifar.py:20-37`:
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+image_size = 32
+channels = 3
+num_samples = 16
+output_dir = "ddim_comparison_cifar"
+
+# Initialize diffusion matching training config
+diffusion = DiffusionProcessCIFAR(
+    image_size=32,
+    channels=3,
+    dropout_p=0.1,
+    device=device,
+)
+```
+
+### Expected outputs
+
+All outputs are saved to `ddim_comparison_cifar/`:
+
+1. **quality_comparison.png**: Side-by-side DDPM and DDIM RGB samples
+2. **timing_analysis.png**: Timing and speedup charts for CIFAR-10
+3. **analysis_report.txt**: Dataset-specific analysis
+4. **ddpm_samples.png**: DDPM baseline samples
+5. **ddim_X_samples.png**: DDIM samples for each configuration
+
+### CIFAR-10 specific findings
+
+From `ddim_comparison_cifar.py:206-226`:
+
+- More complex dataset requires more steps than MNIST
+- **Minimum viable**: 50-100 steps for recognizable images
+- **Recommended**: 100-250 steps for production quality
+- **Optimal tradeoff**: DDIM-100 to DDIM-250
+- Still achieves 4-10x speedup over DDPM
+
+## Batch runner
+
+Run both MNIST and CIFAR-10 comparisons sequentially.
+
+### Usage
+
+```bash
+python src/utilities/run_ddim_comparison.py
+```
+
+### Behavior
+
+From `run_ddim_comparison.py:9-34`, the script:
+
+1. Checks for trained model files before running
+2. Skips comparisons if models are not found
+3. Reports success/failure for each dataset
+4. Provides summary of all generated outputs
+
+### Example output
+
+```
+======================================================================
+DDIM vs DDPM Comparison Runner
+======================================================================
+
+This script will run comparisons for available trained models.
+
+======================================================================
+
+Running: ddim_comparison_mnist.py
+...
+✅ ddim_comparison_mnist.py completed successfully
+
+Running: ddim_comparison_cifar.py
+...
+✅ ddim_comparison_cifar.py completed successfully
+
+======================================================================
+SUMMARY
+======================================================================
+
+MNIST:
+  Status: ✅ Complete
+  Output: ddim_comparison_mnist/
+  Files:
+    • quality_comparison.png
+    • timing_analysis.png
+    • analysis_report.txt
+    • ddpm_samples.png
+    • ddim_*_samples.png (multiple)
+
+CIFAR-10:
+  Status: ✅ Complete
+  Output: ddim_comparison_cifar/
+  ...
+```
+
+## Parameters
+
+### Common parameters
+
+All comparison scripts share these parameters:
+
+| Parameter | Description | Default |
+|-----------|-------------|----------|
+| `device` | Compute device (cuda/cpu) | Auto-detected |
+| `num_samples` | Number of images to generate | 16 |
+| `ddim_step_configs` | List of DDIM step counts to test | [10, 20, 50, 100, 250, 500, 1000] |
+| `eta` | DDIM stochasticity parameter | 0.0 (deterministic) |
+
+### MNIST specific
+
+| Parameter | Value |
+|-----------|-------|
+| `image_size` | 28 |
+| `channels` | 1 (grayscale) |
+| `hidden_dims` | [128, 256, 512] |
+| `model_path` | `best_model.pt` |
+
+### CIFAR-10 specific
+
+| Parameter | Value |
+|-----------|-------|
+| `image_size` | 32 |
+| `channels` | 3 (RGB) |
+| `dropout_p` | 0.1 |
+| `model_path` | `best_model_cifar.pt` |
+
+## Implementation details
+
+### Sampling comparison
+
+Both scripts follow this workflow from `ddim_comparison_mnist.py:59-86`:
+
+1. **DDPM baseline**: Sample with full 1000 steps, measure time
+2. **DDIM variants**: For each step configuration:
+   - Clear GPU cache if available
+   - Sample with `diffusion.sample_ddim(num_samples, ddim_steps, eta=0.0)`
+   - Measure time and calculate speedup
+   - Store samples for visualization
+
+### Visualization generation
+
+Three types of visualizations are created:
+
+1. **Quality comparison** (`ddim_comparison_mnist.py:94-127`): 2x4 matplotlib grid showing samples from each configuration
+2. **Timing analysis** (`ddim_comparison_mnist.py:130-163`): Bar chart of sampling times + line plot of speedup vs steps
+3. **Individual grids** (`ddim_comparison_mnist.py:166-178`): Separate PNG files for each configuration
+
+### Analysis report
+
+The report (`ddim_comparison_mnist.py:185-222`) includes:
+
+1. Sampling speed breakdown for all configurations
+2. Quality vs speed tradeoff recommendations
+3. Key findings specific to the dataset
+4. Step requirements and minimum viable configurations
+5. Detailed analysis of results
+
+## Performance expectations
+
+### MNIST typical results
+
+- DDPM (1000 steps): ~10-15s on GPU, ~0.010s per sample
+- DDIM (50 steps): ~1-2s on GPU, ~0.001s per sample (~10-15x speedup)
+- DDIM (100 steps): ~2-3s on GPU, ~0.002s per sample (~5-7x speedup)
+
+### CIFAR-10 typical results
+
+- DDPM (1000 steps): ~30-45s on GPU, ~0.030s per sample
+- DDIM (100 steps): ~5-8s on GPU, ~0.005s per sample (~6-8x speedup)
+- DDIM (250 steps): ~12-18s on GPU, ~0.012s per sample (~3-4x speedup)
+
+## Related functions
+
+- `DiffusionProcess.sample_ddim()`: DDIM sampling implementation
+- `DiffusionProcess.sample()`: Standard DDPM sampling
+- See [Diffusion process](./diffusion) for core sampling methods

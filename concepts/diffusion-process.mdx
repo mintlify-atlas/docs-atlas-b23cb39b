@@ -1,0 +1,175 @@
+---
+title: Diffusion process
+description: Understanding the forward and reverse diffusion process that forms the foundation of generative diffusion models
+---
+
+The diffusion process is the core mechanism behind denoising diffusion probabilistic models (DDPM). It consists of two phases: a **forward process** that gradually adds noise to data, and a **reverse process** that learns to denoise and generate new samples.
+
+## Forward diffusion process
+
+The forward process systematically corrupts data by adding Gaussian noise over T timesteps. At each step t, we sample from:
+
+```
+q(x_t | x_0) = N(√ᾱ_t x_0, (1-ᾱ_t) I)
+```
+
+Where:
+- `x_0` is the original clean image
+- `x_t` is the noisy image at timestep t
+- `ᾱ_t` is the cumulative product of alphas up to timestep t
+- `α_t = 1 - β_t` where β_t is the noise variance schedule
+
+<Info>
+The forward process is **fixed** and requires no learning. It's purely a mathematical transformation that progressively destroys information in the data.
+</Info>
+
+### Implementation
+
+Here's how the forward process is implemented in the codebase:
+
+```python src/models/diffusion.py
+def add_noise(self, x, t):
+    """
+    Add noise to the input images according to the diffusion process.
+    Args:
+        x: Clean images tensor of shape [batch_size, channels, height, width]
+        t: Timesteps tensor of shape [batch_size]
+    Returns:
+        Tuple of (noisy_images, noise)
+    """
+    x = x.to(self.device)
+    t = t.to(self.device)
+    sqrt_alpha_cumprod_t = self.sqrt_alpha_cumprod[t].view(-1, 1, 1, 1)
+    noise = torch.randn_like(x)
+    sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t].view(-1, 1, 1, 1)
+    x_t = sqrt_alpha_cumprod_t * x + sqrt_one_minus_alpha_cumprod_t * noise
+    return x_t, noise
+```
+
+The key insight is that we can sample `x_t` directly from `x_0` at any timestep without computing all intermediate steps. This is enabled by the reparameterization:
+
+```
+x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε
+```
+
+Where `ε ~ N(0, I)` is standard Gaussian noise.
+
+<Tip>
+By timestep T=1000, the original image becomes nearly indistinguishable from pure Gaussian noise. This property ensures that the reverse process can start from a simple prior distribution.
+</Tip>
+
+## Reverse diffusion process
+
+The reverse process learns to invert the forward diffusion, gradually denoising samples from pure noise back to realistic data. At each step, we predict:
+
+```
+p_θ(x_{t-1} | x_t) = N(μ_θ(x_t, t), σ_t² I)
+```
+
+Where the model predicts the mean μ_θ and uses a fixed variance schedule σ_t.
+
+### Mean prediction via noise estimation
+
+Instead of directly predicting the mean, the model predicts the **noise** that was added, then computes the denoised sample:
+
+```python src/models/diffusion.py
+# In the sampling loop
+for t in reversed(range(self.noise_steps)):
+    t_batch = torch.full((num_samples,), t, device=self.device, dtype=torch.long)
+    predicted_noise = self.model(x_t, t_batch)
+
+    # Retrieve schedule values 
+    beta_t = self.beta_schedule[t]
+    alpha_t = self.alpha_schedule[t]
+    sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t]
+    sqrt_recip_alpha_t = 1.0 / torch.sqrt(alpha_t)
+
+    # Compute x_{t-1} mean
+    model_mean = sqrt_recip_alpha_t * ( 
+        x_t - (beta_t / sqrt_one_minus_alpha_cumprod_t) * predicted_noise)
+    
+    if t > 0:
+        noise = torch.randn_like(x_t)
+        sigma_t = torch.sqrt(beta_t)
+        x_t = model_mean + sigma_t * noise
+    else:
+        x_t = model_mean
+```
+
+This formulation comes from the DDPM paper's derivation of the posterior mean:
+
+```
+μ_θ(x_t, t) = 1/√α_t · (x_t - β_t/√(1-ᾱ_t) · ε_θ(x_t, t))
+```
+
+<Note>
+At the final timestep (t=0), no noise is added to the mean prediction. This produces the final deterministic output.
+</Note>
+
+## Schedule precomputation
+
+For efficiency, all schedule-dependent quantities are precomputed during initialization:
+
+```python src/models/diffusion.py
+# Create beta schedule
+self.beta_schedule = cosine_beta_schedule(noise_steps).to(self.device)
+self.alpha_schedule = (1.0 - self.beta_schedule).to(self.device)
+
+# Compute cumulative products
+self.alpha_cumprod = torch.cumprod(self.alpha_schedule, dim=0).to(self.device)
+
+# Precompute frequently used square roots
+self.sqrt_alpha_cumprod = torch.sqrt(self.alpha_cumprod).to(self.device)
+self.sqrt_one_minus_alpha_cumprod = torch.sqrt(1.0 - self.alpha_cumprod).to(self.device)
+```
+
+These precomputed tensors are indexed during both training and sampling, avoiding redundant computation.
+
+## Training objective
+
+The model is trained to predict the noise ε that was added during the forward process:
+
+```python src/models/diffusion.py
+def train_step(self, x):
+    x = x.to(self.device)
+    # Sample random timesteps
+    t = torch.randint(0, self.noise_steps, (x.shape[0],), device=self.device)
+    # Add noise to images
+    x_t, noise = self.add_noise(x, t)
+    # Predict the noise using the model
+    self.optimizer.zero_grad(set_to_none=True)
+    with self.autocast_ctx():
+        noise_pred = self.model(x_t, t)
+        # Calculate MSE loss between predicted and actual noise
+        loss = F.mse_loss(noise_pred, noise)
+    # Backpropagation
+    if self.grad_scaler.is_enabled():
+        self.grad_scaler.scale(loss).backward()
+        self.grad_scaler.step(self.optimizer)
+        self.grad_scaler.update()
+    else:
+        loss.backward()
+        self.optimizer.step()
+    return loss.item()
+```
+
+The training objective is simply:
+
+```
+L = E[||ε - ε_θ(x_t, t)||²]
+```
+
+<Tip>
+This noise prediction parameterization is mathematically equivalent to predicting the denoised image x_0, but empirically produces better sample quality and more stable training.
+</Tip>
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="DDPM" icon="chart-line" href="/concepts/ddpm">
+    Learn about the DDPM algorithm and training details
+  </Card>
+  <Card title="Noise schedules" icon="wave-sine" href="/concepts/noise-schedules">
+    Explore cosine vs linear noise schedules
+  </Card>
+</CardGroup>

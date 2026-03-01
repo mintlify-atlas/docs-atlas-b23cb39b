@@ -1,122 +1,107 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Stable Diffusion from Scratch",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#8B5CF6",
+    "light": "#A78BFA",
+    "dark": "#6D28D9"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/AymanMahfuz27/stable-diffusion-from-scratch"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/AymanMahfuz27/stable-diffusion-from-scratch"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/diffusion-process",
+              "concepts/ddpm",
+              "concepts/ddim",
+              "concepts/noise-schedules"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Training Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "training/mnist",
+              "training/cifar10",
+              "training/hpc-slurm"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Model Architecture",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "architecture/unet",
+              "architecture/mnist-model",
+              "architecture/cifar-model",
+              "architecture/ema"
+            ]
+          },
+          {
+            "group": "Sampling & Inference",
+            "pages": [
+              "sampling/ddpm-sampling",
+              "sampling/ddim-sampling",
+              "sampling/interpolation"
+            ]
+          },
+          {
+            "group": "Experiments",
+            "pages": [
+              "experiments/ddpm-vs-ddim",
+              "experiments/speed-quality-tradeoffs",
+              "experiments/timestep-analysis"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Models",
             "pages": [
-              "api-reference/introduction"
+              "api/diffusion-process",
+              "api/diffusion-model",
+              "api/diffusion-cifar"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Training",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/train-mnist",
+              "api/train-cifar"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/ddim-comparison",
+              "api/interpolation"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

@@ -1,0 +1,386 @@
+---
+title: Installation
+description: Set up your environment and install dependencies for training diffusion models from scratch
+---
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+<CardGroup cols={2}>
+  <Card title="Python 3.10-3.12" icon="python">
+    Any reasonably recent version in the 3.10-3.12 range should work
+  </Card>
+  <Card title="CUDA GPU (recommended)" icon="microchip">
+    Optional but strongly recommended for faster training. CPU training is supported but much slower.
+  </Card>
+</CardGroup>
+
+<Note>
+  The code automatically detects CUDA and uses GPU acceleration when available. No manual configuration needed.
+</Note>
+
+## Local installation
+
+<Steps>
+  <Step title="Clone the repository">
+    First, clone the repository to your local machine:
+    
+    ```bash
+    git clone https://github.com/your-username/stable-diffusion-scratch.git
+    cd stable-diffusion-scratch
+    ```
+  </Step>
+  
+  <Step title="Create a virtual environment">
+    It's recommended to use a virtual environment to avoid dependency conflicts:
+    
+    <CodeGroup>
+    
+    ```bash Linux/macOS
+    python -m venv .venv
+    source .venv/bin/activate
+    ```
+    
+    ```bash Windows
+    python -m venv .venv
+    .venv\Scripts\activate
+    ```
+    
+    </CodeGroup>
+    
+    <Tip>
+      You should see `(.venv)` appear at the start of your terminal prompt, indicating the virtual environment is active.
+    </Tip>
+  </Step>
+  
+  <Step title="Install dependencies">
+    Install all required packages from `requirements.txt`:
+    
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+    This installs:
+    - `torch` - PyTorch deep learning framework
+    - `torchvision` - Image datasets and transformations
+    - `torchaudio` - Audio processing utilities
+    - `matplotlib` - Plotting and visualization
+    - `tqdm` - Progress bars for training loops
+  </Step>
+  
+  <Step title="Verify installation">
+    Check that PyTorch can detect your GPU (if available):
+    
+    ```python
+    python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+    ```
+    
+    Expected output:
+    ```
+    CUDA available: True  # If you have a CUDA-enabled GPU
+    CUDA available: False # If running on CPU
+    ```
+  </Step>
+</Steps>
+
+## Installing PyTorch with CUDA
+
+If you have a CUDA-enabled GPU but the above shows `CUDA available: False`, you may need to install PyTorch with CUDA support explicitly.
+
+<Tabs>
+  <Tab title="CUDA 11.8">
+    ```bash
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    ```
+  </Tab>
+  <Tab title="CUDA 12.1">
+    ```bash
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    ```
+  </Tab>
+  <Tab title="CPU only">
+    ```bash
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Make sure your CUDA version matches the PyTorch wheel you install. Check your CUDA version with `nvcc --version` or `nvidia-smi`.
+</Warning>
+
+## Dataset setup
+
+The datasets are **automatically downloaded** on the first run. No manual setup required!
+
+<AccordionGroup>
+  <Accordion title="MNIST dataset">
+    When you run `python src/training/train_diffusion.py` for the first time, the code will automatically:
+    
+    1. Download MNIST from `torchvision.datasets`
+    2. Save it to `data/MNIST/`
+    3. Process and cache the data
+    
+    ```python
+    dataset = datasets.MNIST(
+        root="./data", 
+        train=True, 
+        download=True,  # Automatic download!
+        transform=transform
+    )
+    ```
+    
+    Dataset size: ~50 MB
+  </Accordion>
+  
+  <Accordion title="CIFAR-10 dataset">
+    Similarly, CIFAR-10 is downloaded automatically when running the CIFAR training script:
+    
+    ```python
+    dataset = datasets.CIFAR10(
+        root="./data",
+        train=True,
+        download=True,  # Automatic download!
+        transform=transform
+    )
+    ```
+    
+    Dataset size: ~170 MB
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  The first run will take a few extra minutes to download the datasets. Subsequent runs will use the cached data.
+</Tip>
+
+## HPC cluster setup
+
+If you're using an HPC cluster with SLURM, you can use the provided batch scripts.
+
+### Environment modules
+
+Most clusters use environment modules for CUDA and Python:
+
+```bash
+module load cuda/11.8
+module load python/3.11
+```
+
+<Note>
+  Module names vary by cluster. Check your cluster's documentation or run `module avail` to see available modules.
+</Note>
+
+### SLURM scripts
+
+The repository includes ready-to-use SLURM scripts in the `slurm/` directory:
+
+<CodeGroup>
+
+```bash MNIST training
+sbatch slurm/run_diffusion_mnist.slurm
+```
+
+```bash CIFAR-10 training
+sbatch slurm/run_diffusion_cifar.slurm
+```
+
+```bash DDIM comparison
+sbatch slurm/run_ddim_comparison.slurm
+```
+
+</CodeGroup>
+
+### Example SLURM configuration
+
+Here's what a typical SLURM script looks like:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=mnist-ddpm
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=1
+#SBATCH --time=02:00:00
+#SBATCH --mem=16G
+
+module load cuda/11.8
+module load python/3.11
+
+# Create and activate virtual environment
+python -m venv $SLURM_TMPDIR/env
+source $SLURM_TMPDIR/env/bin/activate
+
+# Install dependencies
+pip install --no-index torch torchvision matplotlib tqdm
+
+# Run training
+python src/training/train_diffusion.py
+```
+
+<Tip>
+  Use `$SLURM_TMPDIR` for temporary files and virtual environments on compute nodes. It's much faster than your home directory.
+</Tip>
+
+## Project structure
+
+After installation, your directory should look like this:
+
+```text
+.
+├── src/
+│   ├── models/
+│   │   ├── diffusion.py          # MNIST U-Net and diffusion process
+│   │   └── diffusion_cifar.py    # CIFAR-10 U-Net with EMA
+│   ├── training/
+│   │   ├── train_diffusion.py    # Train MNIST DDPM
+│   │   └── train_diffusion_cifar.py   # Train CIFAR-10 DDPM
+│   └── utilities/
+│       ├── ddim_comparison_mnist.py   # DDPM vs DDIM benchmarks
+│       ├── ddim_comparison_cifar.py
+│       └── interpolation_and_timesteps.py
+├── slurm/                        # SLURM batch scripts
+├── data/                         # Auto-created on first run
+├── samples/                      # Training visualizations
+├── requirements.txt
+└── README.md
+```
+
+<AccordionGroup>
+  <Accordion title="Core models (src/models/)">
+    Contains the U-Net architectures and diffusion processes:
+    - `diffusion.py` - MNIST model with cosine beta schedule
+    - `diffusion_cifar.py` - CIFAR-10 model with linear schedule and EMA
+  </Accordion>
+  
+  <Accordion title="Training scripts (src/training/)">
+    Main entry points for training:
+    - `train_diffusion.py` - Train MNIST DDPM (50 epochs, ~5-10 min)
+    - `train_diffusion_cifar.py` - Train CIFAR-10 DDPM (2000 epochs, GPU required)
+  </Accordion>
+  
+  <Accordion title="Utilities (src/utilities/)">
+    Analysis and comparison scripts:
+    - `ddim_comparison_mnist.py` - Benchmark DDPM vs DDIM on MNIST
+    - `ddim_comparison_cifar.py` - Benchmark DDPM vs DDIM on CIFAR-10
+    - `interpolation_and_timesteps.py` - Latent interpolation and timestep analysis
+  </Accordion>
+  
+  <Accordion title="SLURM scripts (slurm/)">
+    Ready-to-use batch scripts for HPC clusters:
+    - `run_diffusion_mnist.slurm` - MNIST training job
+    - `run_diffusion_cifar.slurm` - CIFAR-10 training job
+    - `run_ddim_comparison.slurm` - DDPM vs DDIM comparison jobs
+  </Accordion>
+</AccordionGroup>
+
+## Performance optimization
+
+The code includes several optimizations for faster training:
+
+### Mixed precision training
+
+Automatic mixed precision (AMP) is enabled when using CUDA:
+
+```python
+if self.device.type == 'cuda':
+    self.grad_scaler = torch.amp.GradScaler('cuda')
+    self.autocast_ctx = lambda: torch.amp.autocast('cuda')
+else:
+    self.grad_scaler = torch.amp.GradScaler('cuda', enabled=False)
+    self.autocast_ctx = lambda: nullcontext()
+```
+
+This can speed up training by 2-3x on modern GPUs with minimal precision loss.
+
+### CUDNN benchmarking
+
+The training scripts automatically enable CUDNN benchmarking:
+
+```python
+if device.type == "cuda":
+    torch.backends.cudnn.benchmark = True
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+```
+
+### Data loading
+
+Efficient data loading with multiple workers and pinned memory:
+
+```python
+num_workers = min(8, os.cpu_count() or 4)
+loader = DataLoader(
+    dataset,
+    batch_size=128,
+    shuffle=True,
+    num_workers=num_workers,
+    pin_memory=(device.type == "cuda"),
+    persistent_workers=num_workers > 0,
+)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Out of memory errors">
+    If you encounter CUDA out-of-memory errors:
+    
+    1. Reduce `batch_size` in the training script (default is 128)
+    2. Reduce `hidden_dims` for a smaller model
+    3. Use gradient accumulation to simulate larger batches
+    
+    ```python
+    # Reduce batch size
+    batch_size = 64  # or 32
+    
+    # Smaller model
+    hidden_dims = [64, 128, 256]  # instead of [128, 256, 512]
+    ```
+  </Accordion>
+  
+  <Accordion title="Slow training on CPU">
+    CPU training is significantly slower than GPU training. For MNIST:
+    - GPU: ~5-10 minutes
+    - CPU: ~30-60 minutes
+    
+    Consider:
+    1. Using a smaller model with fewer `hidden_dims`
+    2. Reducing the number of `epochs`
+    3. Using Google Colab or Kaggle for free GPU access
+  </Accordion>
+  
+  <Accordion title="Import errors">
+    If you see `ModuleNotFoundError`, make sure you:
+    
+    1. Activated your virtual environment
+    2. Installed all dependencies from `requirements.txt`
+    3. Are running scripts from the project root directory
+    
+    ```bash
+    # Verify you're in the project root
+    pwd  # Should show .../stable-diffusion-scratch
+    
+    # Verify virtual environment is active
+    which python  # Should show .../venv/bin/python
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Train your first MNIST diffusion model in under 10 minutes
+  </Card>
+  <Card
+    title="Introduction"
+    icon="book-open"
+    href="/introduction"
+  >
+    Learn about the architecture and design philosophy
+  </Card>
+</CardGroup>

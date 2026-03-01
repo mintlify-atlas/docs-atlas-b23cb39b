@@ -1,0 +1,617 @@
+---
+title: Running training on HPC with SLURM
+description: Deploy diffusion model training on HPC clusters using SLURM workload manager for GPU-accelerated training at scale
+---
+
+This guide covers running diffusion training on HPC clusters using SLURM (Simple Linux Utility for Resource Management). The examples target TACC Lonestar6 but apply to most HPC systems.
+
+## Quick start
+
+<Steps>
+
+### Update SLURM script
+
+Edit the SLURM script to add your information:
+
+```bash
+nano slurm/run_diffusion_cifar.slurm
+```
+
+Update these required fields:
+
+```bash slurm/run_diffusion_cifar.slurm
+#SBATCH --mail-user=your.email@domain.com
+#SBATCH -A your-project-allocation
+```
+
+### Check your allocation
+
+Verify you have access to GPU resources:
+
+```bash
+squeue -u $USER
+taccinfo  # TACC-specific
+```
+
+### Submit the job
+
+Submit your training job to the queue:
+
+<CodeGroup>
+
+```bash H100 GPU (fastest)
+sbatch slurm/run_diffusion_cifar.slurm
+```
+
+```bash A100 GPU (more available)
+sbatch slurm/run_diffusion_a100.slurm
+```
+
+```bash MNIST quick test
+sbatch slurm/run_diffusion_mnist.slurm
+```
+
+</CodeGroup>
+
+### Monitor your job
+
+```bash
+# Check job status
+squeue -u $USER
+
+# View output in real-time
+tail -f diffusion_cifar_<JOBID>.out
+
+# Check errors
+tail -f diffusion_cifar_<JOBID>.err
+```
+
+</Steps>
+
+## SLURM script anatomy
+
+### CIFAR-10 on A100 GPUs
+
+Here's a complete SLURM script for CIFAR-10 training:
+
+```bash slurm/run_diffusion_cifar.slurm
+#!/bin/bash
+#SBATCH -J diffusion_cifar          # Job name
+#SBATCH -o diffusion_cifar_%j.out   # Output file (%j = job ID)
+#SBATCH -e diffusion_cifar_%j.err   # Error file
+#SBATCH -p gpu-a100                 # Partition (gpu-h100 or gpu-a100)
+#SBATCH -N 1                        # Number of nodes
+#SBATCH -n 1                        # Number of tasks (processes)
+#SBATCH -t 48:00:00                 # Wall clock time (48 hours)
+#SBATCH --mail-user=aymanmahfuz27@utexas.edu
+#SBATCH --mail-type=all             # Email notifications
+#SBATCH -A ASC25078                 # Allocation name
+
+# Load required modules
+module purge
+module load cuda/12.8
+module load python/3.12.11
+
+# Install dependencies (only first time)
+pip3 install --user torch torchvision torchaudio matplotlib tqdm 2>&1 | grep -v "already satisfied" || true
+
+# Navigate to working directory
+cd $SLURM_SUBMIT_DIR
+
+# Print environment info
+echo "Job started at: $(date)"
+echo "Running on node: $(hostname)"
+echo "Working directory: $(pwd)"
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+echo "Checkpoints will be saved to: $WORK/stable-diffusion-cifar/"
+
+# Set PyTorch optimizations
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export TORCH_CUDA_ARCH_LIST="8.0;9.0"  # A100=8.0, H100=9.0
+
+# Run training with GPU binding
+srun --gpu-bind=single:1 -u python3 src/training/train_diffusion_cifar.py
+
+echo "Job finished at: $(date)"
+echo "Checkpoints: $WORK/stable-diffusion-cifar/checkpoints/"
+echo "Samples: $WORK/stable-diffusion-cifar/cifar_samples/"
+```
+
+### MNIST quick test
+
+For rapid testing, use the MNIST script with shorter runtime:
+
+```bash slurm/run_diffusion_mnist.slurm
+#!/bin/bash
+#SBATCH -J diffusion_mnist
+#SBATCH -o diffusion_mnist_%j.out
+#SBATCH -e diffusion_mnist_%j.err
+#SBATCH -p gpu-a100
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH -t 2:00:00  # 2 hours is enough for MNIST
+#SBATCH --mail-user=aymanmahfuz27@utexas.edu
+#SBATCH --mail-type=all
+#SBATCH -A ASC25078
+
+module purge
+module load cuda/12.8
+module load python/3.12.11
+
+cd $SLURM_SUBMIT_DIR
+
+echo "Job started at: $(date)"
+echo "Running on node: $(hostname)"
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export TORCH_CUDA_ARCH_LIST="8.0;9.0"
+
+# Run MNIST training
+srun --gpu-bind=single:1 -u python3 src/training/train_diffusion.py
+
+echo "Job finished at: $(date)"
+echo "MNIST samples saved to samples/ directory"
+```
+
+## Key SLURM directives
+
+### Resource allocation
+
+```bash
+#SBATCH -p gpu-a100      # Partition/queue name
+#SBATCH -N 1             # Number of nodes
+#SBATCH -n 1             # Number of MPI tasks
+#SBATCH --gpus-per-node=1  # GPUs per node
+#SBATCH -t 48:00:00      # Max runtime (HH:MM:SS)
+```
+
+### Job identification
+
+```bash
+#SBATCH -J diffusion_cifar          # Job name
+#SBATCH -o diffusion_cifar_%j.out   # stdout (%j = job ID)
+#SBATCH -e diffusion_cifar_%j.err   # stderr
+```
+
+### Notifications
+
+```bash
+#SBATCH --mail-user=your.email@domain.com
+#SBATCH --mail-type=all  # all, begin, end, fail
+```
+
+### Account/allocation
+
+```bash
+#SBATCH -A your-project-allocation
+```
+
+<Warning>
+The allocation name is required and must match your active TACC project. Find yours with `taccinfo -p`.
+</Warning>
+
+## GPU queue information
+
+### Lonestar6 GPU queues
+
+| Queue | GPUs | VRAM | Nodes | Max Time | Best For |
+|-------|------|------|-------|----------|----------|
+| `gpu-h100` | H100 | 80GB | 5 | 48h | Fastest training, newest |
+| `gpu-a100` | A100 | 40GB | 46 | 48h | More availability, fast |
+| `vm-small` | A40 | 48GB | - | 2h | Quick testing only |
+
+### Check queue availability
+
+```bash
+# See available GPUs in each queue
+sinfo -p gpu-h100
+sinfo -p gpu-a100
+
+# See queue limits and policies
+qlimits
+
+# See jobs in queue
+squeue -p gpu-a100
+```
+
+## Module management
+
+### Required modules
+
+Lonestar6 requires specific modules for GPU training:
+
+```bash
+module purge          # Clear existing modules
+module load cuda/12.8
+module load python/3.12.11
+```
+
+### Check loaded modules
+
+```bash
+module list
+```
+
+### Available versions
+
+```bash
+module avail cuda
+module avail python
+```
+
+## Python environment setup
+
+### User installation (simplest)
+
+Install packages to your home directory:
+
+```bash
+pip3 install --user torch torchvision torchaudio matplotlib tqdm
+```
+
+### Virtual environment (recommended)
+
+Create an isolated environment:
+
+```bash
+module load python/3.12.11
+python3 -m venv ~/venv-diffusion
+source ~/venv-diffusion/bin/activate
+pip install torch torchvision torchaudio matplotlib tqdm
+```
+
+Then uncomment this line in your SLURM script:
+
+```bash
+source ~/venv-diffusion/bin/activate
+```
+
+### Conda environment
+
+If you prefer conda:
+
+```bash
+module load conda
+conda create -n diffusion python=3.12
+conda activate diffusion
+pip install torch torchvision torchaudio matplotlib tqdm
+```
+
+## Job management
+
+### Submit a job
+
+```bash
+sbatch slurm/run_diffusion_cifar.slurm
+```
+
+Returns: `Submitted batch job 123456`
+
+### Check job status
+
+```bash
+# Your jobs
+squeue -u $USER
+
+# Specific job
+squeue -j 123456
+
+# Detailed job info
+scontrol show job 123456
+```
+
+### Monitor job output
+
+```bash
+# Follow stdout in real-time
+tail -f diffusion_cifar_123456.out
+
+# Check for errors
+tail -f diffusion_cifar_123456.err
+
+# View full output
+less diffusion_cifar_123456.out
+```
+
+### Cancel a job
+
+```bash
+# Cancel specific job
+scancel 123456
+
+# Cancel all your jobs
+scancel -u $USER
+```
+
+### Job history
+
+```bash
+# Recent jobs
+sacct -u $USER
+
+# Detailed job info
+sacct -j 123456 --format=JobID,JobName,Partition,State,ExitCode,Elapsed
+```
+
+## File system paths
+
+### Important directories
+
+| Variable | Path | Purpose | Backed Up | Quota |
+|----------|------|---------|-----------|-------|
+| `$HOME` | `/home1/12345/username` | Code, scripts | Yes | 10GB |
+| `$WORK` | `/work2/12345/username` | Checkpoints, models | No | 1TB |
+| `$SCRATCH` | `/scratch/12345/username` | Temporary data | No | Unlimited |
+
+### Output location
+
+The training script saves outputs to `$WORK`:
+
+```bash slurm/run_diffusion_cifar.slurm
+echo "HOME: $HOME"
+echo "WORK: $WORK"
+echo "SCRATCH: $SCRATCH"
+echo "Checkpoints will be saved to: $WORK/stable-diffusion-cifar/"
+```
+
+<Tip>
+Store large files (checkpoints, datasets) in `$WORK` or `$SCRATCH`, not `$HOME`. `$HOME` has a strict 10GB quota.
+</Tip>
+
+### Check disk usage
+
+```bash
+# Your quota and usage
+quota -s
+
+# Directory sizes
+du -sh $WORK/*
+du -sh $SCRATCH/*
+```
+
+## Training configuration
+
+### Resume from checkpoint
+
+Resume training by setting environment variables in the SLURM script:
+
+```bash
+# Add before srun command
+export RESUME_FROM_BEST=1
+export EPOCHS=3000
+
+srun --gpu-bind=single:1 -u python3 src/training/train_diffusion_cifar.py
+```
+
+### Disable early stopping
+
+For long training runs:
+
+```bash
+export EARLY_STOP=0
+export EPOCHS=2000
+```
+
+### Custom checkpoint path
+
+```bash
+export RESUME_FROM="$WORK/stable-diffusion-cifar/checkpoints/checkpoint_epoch1000.pt"
+```
+
+## Performance tuning
+
+### GPU binding
+
+Bind each task to a single GPU for optimal performance:
+
+```bash
+srun --gpu-bind=single:1 -u python3 src/training/train_diffusion_cifar.py
+```
+
+### CUDA optimizations
+
+```bash slurm/run_diffusion_cifar.slurm
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export TORCH_CUDA_ARCH_LIST="8.0;9.0"  # A100=8.0, H100=9.0
+```
+
+### PyTorch sanity check
+
+The SLURM script includes a GPU verification step:
+
+```bash slurm/run_diffusion_cifar.slurm
+echo "=== PyTorch CUDA sanity check ==="
+srun --gpu-bind=single:1 python3 - << 'EOF'
+import os, torch
+print("CUDA visible:", os.environ.get("CUDA_VISIBLE_DEVICES"))
+print("torch.cuda.is_available:", torch.cuda.is_available())
+print("device_count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    print("device 0:", torch.cuda.get_device_name(0))
+    x = torch.linspace(0, 1, 4, device="cuda")
+    print("linspace on cuda ok:", x.tolist())
+EOF
+```
+
+This validates GPU access before starting long training runs.
+
+## Expected training times
+
+### MNIST
+
+- **H100**: 8-10 minutes (50 epochs)
+- **A100**: 12-15 minutes (50 epochs)
+
+### CIFAR-10
+
+- **H100**: 15-18 hours (2000 epochs, batch_size=256)
+- **A100**: 18-22 hours (2000 epochs, batch_size=256)
+
+<Tip>
+For the fastest results, use H100 GPUs in the `gpu-h100` queue. They provide ~1.5× speedup over A100.
+</Tip>
+
+## Troubleshooting
+
+### Job pending forever
+
+**Problem**: Job stays in `PD` (pending) state.
+
+**Solutions**:
+
+```bash
+# Check allocation is active
+taccinfo
+
+# Verify allocation name
+taccinfo -p
+
+# Check queue availability
+sinfo -p gpu-a100
+```
+
+### Module not found
+
+**Problem**: `ModuleCmd_Load.c(213):ERROR:105: Unable to locate a modulefile`
+
+**Solution**: Use correct module names for your HPC system:
+
+```bash
+# List available modules
+module avail
+
+# Search for specific module
+module avail cuda
+module avail python
+```
+
+### Out of memory
+
+**Problem**: CUDA out of memory error.
+
+**Solutions**:
+
+1. **Reduce batch size** in `src/training/train_diffusion_cifar.py`:
+   ```python
+   batch_size = 128  # or 64
+   ```
+
+2. **Use gradient accumulation** (already enabled by default)
+
+3. **Request more VRAM**:
+   ```bash
+   #SBATCH -p gpu-h100  # 80GB vs 40GB
+   ```
+
+### Wrong allocation name
+
+**Problem**: `sbatch: error: Batch job submission failed: Invalid account or account/partition combination`
+
+**Solution**: Find your allocations:
+
+```bash
+taccinfo -p
+# Or
+sacctmgr show user $USER
+```
+
+### Python packages not found
+
+**Problem**: `ModuleNotFoundError: No module named 'torch'`
+
+**Solution**: Install packages or activate your virtual environment:
+
+```bash
+pip3 install --user torch torchvision torchaudio matplotlib tqdm
+```
+
+Or in SLURM script:
+
+```bash
+source ~/venv-diffusion/bin/activate
+```
+
+## Interactive debugging
+
+For testing before submitting long jobs:
+
+### Request interactive GPU session
+
+```bash
+idev -p gpu-a100 -N 1 -n 1 -t 2:00:00
+```
+
+This provides:
+- 1 A100 GPU
+- 2 hours
+- Interactive shell
+
+### Run training interactively
+
+```bash
+module load cuda/12.8
+module load python/3.12.11
+python3 src/training/train_diffusion.py
+```
+
+### Exit interactive session
+
+```bash
+exit
+```
+
+<Warning>
+Interactive sessions are limited to 2 hours and should only be used for debugging, not full training runs.
+</Warning>
+
+## Output files
+
+### Job logs
+
+- `diffusion_cifar_<JOBID>.out` - Training progress, loss, epoch info
+- `diffusion_cifar_<JOBID>.err` - Errors, warnings, stack traces
+
+### Training outputs
+
+Saved to `$WORK/stable-diffusion-cifar/`:
+
+```
+$WORK/stable-diffusion-cifar/
+├── checkpoints/
+│   ├── checkpoint_latest.pt
+│   ├── checkpoint_best.pt
+│   └── checkpoint_epoch{N}.pt
+├── cifar_samples/
+│   ├── samples_epoch{N}.png
+│   ├── noising_epoch{N}.png
+│   ├── training_curve_cifar.png
+│   ├── DDPM_CIFAR.png
+│   └── DDIM_CIFAR.png
+└── best_model_cifar.pt
+```
+
+### View outputs
+
+```bash
+# List checkpoints
+ls -lh $WORK/stable-diffusion-cifar/checkpoints/
+
+# List samples
+ls -lh $WORK/stable-diffusion-cifar/cifar_samples/
+
+# Check model size
+du -sh $WORK/stable-diffusion-cifar/best_model_cifar.pt
+```
+
+## Resources
+
+- [TACC Lonestar6 User Guide](https://docs.tacc.utexas.edu/hpc/lonestar6/)
+- [TACC User Portal](https://portal.tacc.utexas.edu/)
+- [SLURM Documentation](https://slurm.schedmd.com/documentation.html)
+- [Submit Help Ticket](https://portal.tacc.utexas.edu/tacc-consulting)
+
+## Next steps
+
+- Optimize hyperparameters for your dataset
+- Experiment with different model architectures
+- Try multi-GPU training with distributed data parallel

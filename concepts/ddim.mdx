@@ -1,0 +1,299 @@
+---
+title: DDIM
+description: Denoising Diffusion Implicit Models for faster, deterministic sampling from diffusion models
+---
+
+DDIM (Denoising Diffusion Implicit Models), introduced by Song et al. in 2021, is a faster sampling method for diffusion models. Unlike DDPM which requires 1000 steps to generate a sample, DDIM can produce high-quality samples in as few as 10-50 steps.
+
+## Key insight
+
+DDPM's reverse process is **stochastic**—it adds noise at each denoising step. DDIM makes a key observation: we can define a **deterministic** reverse process that produces the same marginal distributions but allows skipping timesteps.
+
+<Info>
+DDIM doesn't require retraining the model. You can use a DDPM-trained model and sample with DDIM immediately.
+</Info>
+
+## The DDIM update rule
+
+Instead of the stochastic DDPM update:
+
+```
+x_{t-1} = 1/√α_t · (x_t - β_t/√(1-ᾱ_t) · ε_θ(x_t, t)) + σ_t · z
+```
+
+DDIM uses a deterministic update (when η=0):
+
+```
+x_{t-1} = √ᾱ_{t-1} · pred_x0 + √(1-ᾱ_{t-1}) · ε_θ(x_t, t)
+```
+
+Where `pred_x0` is the predicted clean image:
+
+```
+pred_x0 = (x_t - √(1-ᾱ_t) · ε_θ(x_t, t)) / √ᾱ_t
+```
+
+### Stochasticity parameter η
+
+DDIM introduces a parameter η ∈ [0, 1] that controls stochasticity:
+
+- **η = 0**: Fully deterministic (standard DDIM)
+- **η = 1**: Recovers stochastic DDPM
+- **0 < η < 1**: Interpolates between deterministic and stochastic
+
+<Tip>
+Deterministic sampling (η=0) is preferred for most applications because it's faster and reproducible—the same noise seed always produces the same image.
+</Tip>
+
+## Implementation
+
+Here's the complete DDIM sampler from the codebase:
+
+```python src/models/diffusion.py
+def sample_ddim(self, num_samples=16, ddim_steps=50, eta=0.0):
+    """
+    Generate samples using DDIM (Denoising Diffusion Implicit Models).
+    
+    Args:
+        num_samples: Number of samples to generate
+        ddim_steps: Number of denoising steps (fewer = faster)
+        eta: Stochasticity parameter. eta=0 is deterministic, eta=1 recovers DDPM
+    
+    Returns:
+        Generated images tensor
+    """
+    if ddim_steps <= 0 or ddim_steps > self.noise_steps:
+        raise ValueError(f"ddim_steps must be in (0, {self.noise_steps}], got {ddim_steps}")
+    
+    self.model.eval()
+    with torch.no_grad():
+        # Create subsequence of timesteps
+        step_size = self.noise_steps // ddim_steps
+        timesteps = list(range(0, self.noise_steps, step_size))
+        if timesteps[-1] != self.noise_steps - 1:
+            timesteps.append(self.noise_steps - 1)
+        timesteps = sorted(timesteps, reverse=True)
+        
+        # Start from random noise
+        x_t = torch.randn(num_samples, self.model.channels, 
+                        self.model.image_size, self.model.image_size,
+                        device=self.device)
+        
+        for i, t in enumerate(timesteps):
+            t_batch = torch.full((num_samples,), t, device=self.device, dtype=torch.long)
+            
+            # Predict noise
+            predicted_noise = self.model(x_t, t_batch)
+            
+            # Get schedule values
+            alpha_cumprod_t = self.alpha_cumprod[t]
+            sqrt_alpha_cumprod_t = self.sqrt_alpha_cumprod[t]
+            sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t]
+            
+            # Predict x_0
+            pred_x0 = (x_t - sqrt_one_minus_alpha_cumprod_t * predicted_noise) / sqrt_alpha_cumprod_t
+            pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
+            
+            if i < len(timesteps) - 1:
+                t_prev = timesteps[i + 1]
+                alpha_cumprod_t_prev = self.alpha_cumprod[t_prev]
+                sqrt_alpha_cumprod_t_prev = self.sqrt_alpha_cumprod[t_prev]
+                sqrt_one_minus_alpha_cumprod_t_prev = self.sqrt_one_minus_alpha_cumprod[t_prev]
+                
+                # Compute variance for this step
+                sigma_t = eta * torch.sqrt(
+                    (1 - alpha_cumprod_t_prev) / (1 - alpha_cumprod_t) * 
+                    (1 - alpha_cumprod_t / alpha_cumprod_t_prev)
+                )
+                
+                # Direction pointing to x_t
+                dir_xt = torch.sqrt(1 - alpha_cumprod_t_prev - sigma_t**2) * predicted_noise
+                
+                # DDIM update
+                x_t = sqrt_alpha_cumprod_t_prev * pred_x0 + dir_xt
+                
+                # Add noise if stochastic
+                if eta > 0:
+                    noise = torch.randn_like(x_t)
+                    x_t = x_t + sigma_t * noise
+            else:
+                x_t = pred_x0
+        
+        result = torch.clamp(x_t, -1.0, 1.0)
+    self.model.train()
+    return result
+```
+
+## Timestep subsampling
+
+The key to DDIM's speed is **timestep subsampling**. Instead of using all T=1000 timesteps, we select a subsequence:
+
+```python
+step_size = self.noise_steps // ddim_steps  # e.g., 1000 // 50 = 20
+timesteps = list(range(0, self.noise_steps, step_size))  # [0, 20, 40, ..., 980]
+```
+
+This creates a uniform spacing of timesteps. For `ddim_steps=50`, we only perform 50 denoising steps instead of 1000.
+
+<Note>
+The timesteps must be sorted in reverse order during sampling (high noise to low noise). The code handles this with `sorted(timesteps, reverse=True)`.
+</Note>
+
+## CIFAR-10 DDIM implementation
+
+For CIFAR-10, the implementation uses EMA weights for better quality:
+
+```python src/models/diffusion_cifar.py
+def sample_ddim(self, num_samples=16, ddim_steps=50, eta=0.0):
+    # Use EMA model for sampling
+    model = self.ema_model
+    was_training = model.training
+    model.eval()
+    
+    with torch.no_grad():
+        # Uniform grid of timesteps in [0, T-1]
+        step_indices = torch.linspace(
+            0,
+            self.noise_steps - 1,
+            steps=ddim_steps,
+            dtype=torch.long,
+            device=self.device,
+        )
+        timesteps = list(reversed(step_indices.tolist()))
+        
+        x_t = torch.randn(
+            num_samples,
+            self.model.channels,
+            self.model.image_size,
+            self.model.image_size,
+            device=self.device,
+        )
+        
+        for i, t in enumerate(timesteps):
+            t_batch = torch.full((num_samples,), t, device=self.device, dtype=torch.long)
+            eps_pred = model(x_t, t_batch)
+            
+            # ... DDIM update logic ...
+            
+        x_t = torch.clamp(x_t, -1.0, 1.0)
+    
+    if was_training:
+        model.train()
+    return x_t
+```
+
+<Tip>
+Using `torch.linspace` ensures exact uniform spacing of timesteps, which can improve sample quality compared to integer division.
+</Tip>
+
+## Speed vs quality tradeoff
+
+DDIM enables a fundamental tradeoff:
+
+| DDIM Steps | Speedup | Quality |
+|------------|---------|----------|
+| 1000 | 1x (baseline) | Excellent |
+| 250 | 4x | Excellent |
+| 100 | 10x | Very good |
+| 50 | 20x | Good |
+| 20 | 50x | Moderate |
+| 10 | 100x | Poor |
+
+<Info>
+The optimal number of steps depends on your dataset and model. MNIST can achieve good results with 50 steps, while CIFAR-10 may need 100-250 steps for comparable quality to DDPM.
+</Info>
+
+## Deterministic interpolation
+
+Because DDIM is deterministic, it enables smooth interpolations in latent space:
+
+```python
+# Generate two random starting noises
+z1 = torch.randn(1, channels, size, size)
+z2 = torch.randn(1, channels, size, size)
+
+# Interpolate in noise space
+alphas = torch.linspace(0, 1, steps=10)
+interpolated = [(1-a)*z1 + a*z2 for a in alphas]
+
+# Each interpolated noise produces a deterministic image
+images = [sample_ddim(z, ddim_steps=50) for z in interpolated]
+```
+
+With stochastic DDPM, the same noise seed produces different images each time due to sampling randomness.
+
+<Warning>
+When comparing DDPM vs DDIM, ensure you're using the same random seed for the initial noise. Otherwise, differences in sample quality may be due to lucky/unlucky noise samples rather than the algorithm itself.
+</Warning>
+
+## Mathematical foundation
+
+DDIM redefines the forward process as:
+
+```
+q(x_{t-1} | x_t, x_0) = N(√ᾱ_{t-1} · x_0 + √(1-ᾱ_{t-1}-σ_t²) · ε_t, σ_t² I)
+```
+
+Where σ_t can be chosen arbitrarily. When σ_t = 0, this becomes deterministic. When σ_t matches the DDPM posterior variance, it recovers DDPM exactly.
+
+The key insight is that **the marginal distributions q(x_t | x_0) remain the same**, so a model trained with DDPM's objective can be used with DDIM sampling.
+
+## Practical tips
+
+### Choosing ddim_steps
+
+Start with 50 steps and adjust based on your needs:
+
+```python
+# Fast preview
+images = diffusion.sample_ddim(num_samples=16, ddim_steps=20)
+
+# Production quality
+images = diffusion.sample_ddim(num_samples=16, ddim_steps=100)
+
+# Maximum quality (close to DDPM)
+images = diffusion.sample_ddim(num_samples=16, ddim_steps=250)
+```
+
+### Choosing η
+
+For most applications, use η=0 (deterministic):
+
+```python
+# Deterministic (recommended)
+images = diffusion.sample_ddim(ddim_steps=50, eta=0.0)
+
+# Slightly stochastic (can help with diversity)
+images = diffusion.sample_ddim(ddim_steps=50, eta=0.1)
+
+# Fully stochastic (recovers DDPM, rarely used)
+images = diffusion.sample_ddim(ddim_steps=1000, eta=1.0)
+```
+
+<Tip>
+If you need diverse samples, generate multiple images with different noise seeds rather than increasing η. This gives you explicit control over diversity.
+</Tip>
+
+## Comparison with DDPM
+
+### DDPM strengths
+- Slightly better sample quality at T=1000 steps
+- Stochastic sampling can add diversity
+- Well-studied theoretical properties
+
+### DDIM strengths  
+- **10-100x faster** for comparable quality
+- **Deterministic**: same seed → same image
+- Enables semantic image editing via inversion
+- Better for latent space interpolation
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="DDPM" icon="chart-line" href="/concepts/ddpm">
+    Compare with the original stochastic sampling
+  </Card>
+  <Card title="Diffusion process" icon="wave" href="/concepts/diffusion-process">
+    Understand the underlying forward/reverse processes
+  </Card>
+</CardGroup>

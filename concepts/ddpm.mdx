@@ -1,0 +1,297 @@
+---
+title: DDPM
+description: Denoising Diffusion Probabilistic Models explained with implementation details and training strategies
+---
+
+DDPM (Denoising Diffusion Probabilistic Models) is the foundational algorithm for training and sampling from diffusion models. Introduced by Ho et al. in 2020, DDPM provides a principled framework for learning generative models through iterative denoising.
+
+## Core algorithm
+
+DDPM operates in two phases:
+
+1. **Training**: Learn a neural network ε_θ that predicts the noise added at each diffusion step
+2. **Sampling**: Start from pure noise and iteratively denoise for T steps to generate samples
+
+<Info>
+The term "probabilistic" refers to the stochastic nature of the reverse process—at each denoising step, we sample from a Gaussian distribution rather than using a deterministic update.
+</Info>
+
+## Model architecture
+
+DDPM uses a time-conditional U-Net that takes both the noisy image and timestep as input:
+
+### Time embedding
+
+Timesteps are encoded using sinusoidal position embeddings, similar to Transformers:
+
+```python src/models/diffusion.py
+class TimeEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, dim*4),
+            nn.GELU(),
+            nn.Linear(dim*4, dim),
+        )
+    
+    def forward(self, t):
+        half_dim = self.dim // 2
+        # Frequencies for sin/cos encoding
+        freqs = torch.exp(
+            -torch.arange(half_dim, device=t.device) * 
+            (torch.log(torch.tensor(10000.0, device=t.device)) / (half_dim - 1))
+        )
+        emb = t[:, None] * freqs[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return self.mlp(emb)
+```
+
+This embedding is then injected into each residual block of the U-Net.
+
+### Residual blocks with time conditioning
+
+The core building block is a residual block that incorporates time information:
+
+```python src/models/diffusion.py
+class ResBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, time_dim):
+        super().__init__()
+        self.block1 = nn.Sequential(
+            nn.GroupNorm(8, in_ch),
+            nn.SiLU(),
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+        )
+        self.block2 = nn.Sequential(
+            nn.GroupNorm(8, out_ch),
+            nn.SiLU(),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+        )
+        self.time_emb = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(time_dim, out_ch)
+        )
+        self.shortcut = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+    
+    def forward(self, x, t_emb):
+        h = self.block1(x)
+        # Inject time embedding
+        h = h + self.time_emb(t_emb)[:, :, None, None]
+        h = self.block2(h)
+        return self.shortcut(x) + h
+```
+
+<Tip>
+Time conditioning is crucial because the denoising strategy must adapt based on the noise level. Early timesteps (high noise) require broad stroke denoising, while late timesteps (low noise) refine fine details.
+</Tip>
+
+### U-Net architecture
+
+The complete model follows a symmetric encoder-decoder structure:
+
+```python src/models/diffusion.py
+class DiffusionModel(nn.Module):
+    def __init__(self, image_size, channels, hidden_dims=[32, 64, 128], time_dim=128):
+        super().__init__()
+        self.time_mlp = TimeEmbedding(time_dim)
+        self.init_conv = nn.Conv2d(channels, hidden_dims[0], 3, padding=1)
+        
+        # Encoder (downsampling path)
+        self.down_blocks = nn.ModuleList([
+            DownBlock(hidden_dims[0], hidden_dims[1], time_dim),
+            DownBlock(hidden_dims[1], hidden_dims[2], time_dim)
+        ])
+        
+        # Bottleneck with attention
+        self.bottleneck = BottleneckBlock(hidden_dims[2], time_dim)
+        
+        # Decoder (upsampling path)
+        self.up_blocks = nn.ModuleList([
+            UpBlock(hidden_dims[2], hidden_dims[2], hidden_dims[1], time_dim),
+            UpBlock(hidden_dims[1], hidden_dims[1], hidden_dims[0], time_dim)
+        ])
+        
+        self.out_norm = nn.GroupNorm(8, hidden_dims[0])
+        self.out_conv = nn.Conv2d(hidden_dims[0], channels, 3, padding=1)
+```
+
+## Training procedure
+
+The DDPM training algorithm is straightforward:
+
+1. Sample a random batch of training images x_0
+2. Sample random timesteps t uniformly from [0, T-1]
+3. Sample noise ε ~ N(0, I)
+4. Compute noisy images: x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε
+5. Predict the noise: ε_pred = ε_θ(x_t, t)
+6. Compute MSE loss: L = ||ε - ε_pred||²
+7. Backpropagate and update parameters
+
+<Note>
+Timesteps are sampled uniformly during training, which means the model sees all noise levels equally often. This ensures it learns to denoise across the entire diffusion trajectory.
+</Note>
+
+## Sampling procedure
+
+To generate new samples, DDPM reverses the diffusion process:
+
+```python src/models/diffusion.py
+def sample(self, num_samples=16):
+    self.model.eval()
+    with torch.no_grad():
+        # Start with random noise
+        x_t = torch.randn(num_samples, self.model.channels, 
+                        self.model.image_size, self.model.image_size,
+                        device=self.device)
+        
+        # Gradually denoise by iterating through timesteps in reverse
+        for t in reversed(range(self.noise_steps)):
+            t_batch = torch.full((num_samples,), t, device=self.device, dtype=torch.long)
+            predicted_noise = self.model(x_t, t_batch)
+
+            # Retrieve schedule values 
+            beta_t = self.beta_schedule[t]
+            alpha_t = self.alpha_schedule[t]
+            sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alpha_cumprod[t]
+            sqrt_recip_alpha_t = 1.0 / torch.sqrt(alpha_t)
+
+            # Compute x_{t-1}
+            model_mean = sqrt_recip_alpha_t * ( 
+                x_t - (beta_t / sqrt_one_minus_alpha_cumprod_t) * predicted_noise)
+            
+            if t > 0:
+                noise = torch.randn_like(x_t)
+                sigma_t = torch.sqrt(beta_t)
+                x_t = model_mean + sigma_t * noise
+            else:
+                x_t = model_mean
+
+        result = torch.clamp(x_t, -1, 1)
+    self.model.train()
+    return result
+```
+
+The denoising update rule is:
+
+```
+x_{t-1} = 1/√α_t · (x_t - β_t/√(1-ᾱ_t) · ε_θ(x_t, t)) + σ_t · z
+```
+
+Where z ~ N(0, I) is fresh noise added at each step (except the final step).
+
+<Warning>
+DDPM sampling requires T forward passes through the neural network (typically T=1000). This makes generation slow compared to GANs or VAEs. See [DDIM](/concepts/ddim) for a faster alternative.
+</Warning>
+
+## CIFAR-10 enhancements
+
+For more complex datasets like CIFAR-10, several enhancements improve sample quality:
+
+### 1. Deeper architecture
+
+```python src/models/diffusion_cifar.py
+hidden_dims = [128, 256, 256, 256]  # Wider channels for color images
+```
+
+### 2. Multi-resolution attention
+
+Attention is added at 16×16 resolution where it balances expressiveness and computational cost:
+
+```python src/models/diffusion_cifar.py
+attention_resolutions = [1]  # Index 1 corresponds to 16×16
+```
+
+### 3. Dropout for regularization
+
+```python src/models/diffusion_cifar.py
+class ResBlockWithDropout(ResBlock):
+    def __init__(self, in_ch, out_ch, time_dim, dropout_p=0.02):
+        super().__init__(in_ch, out_ch, time_dim)
+        self.dropout = nn.Dropout2d(p=dropout_p)
+```
+
+### 4. Exponential Moving Average (EMA)
+
+EMA weights stabilize sample quality:
+
+```python src/models/diffusion_cifar.py
+# Update EMA after each training step
+with torch.no_grad():
+    for ema_param, param in zip(self.ema_model.parameters(), 
+                                self.model.parameters()):
+        ema_param.data.mul_(self.ema_decay).add_(
+            param.data, alpha=1 - self.ema_decay)
+```
+
+<Tip>
+EMA decay of 0.999 means the EMA model slowly tracks the training model, smoothing out high-frequency updates and improving generalization.
+</Tip>
+
+## Optimization details
+
+### MNIST setup
+
+```python
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+```
+
+### CIFAR-10 setup
+
+```python src/models/diffusion_cifar.py
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=2e-4,
+    weight_decay=1e-5,
+    betas=(0.9, 0.999)
+)
+```
+
+Additional gradient clipping prevents training instability:
+
+```python src/models/diffusion_cifar.py
+torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+```
+
+## Mixed precision training
+
+For faster training on modern GPUs:
+
+```python src/models/diffusion.py
+if self.device.type == 'cuda':
+    self.grad_scaler = torch.amp.GradScaler('cuda')
+    self.autocast_ctx = lambda: torch.amp.autocast('cuda')
+else:
+    self.grad_scaler = torch.amp.GradScaler('cuda', enabled=False)
+    self.autocast_ctx = lambda: nullcontext()
+```
+
+During training:
+
+```python
+with self.autocast_ctx():
+    noise_pred = self.model(x_t, t)
+    loss = F.mse_loss(noise_pred, noise)
+
+if self.grad_scaler.is_enabled():
+    self.grad_scaler.scale(loss).backward()
+    self.grad_scaler.step(self.optimizer)
+    self.grad_scaler.update()
+```
+
+<Info>
+Mixed precision uses float16 for most operations while keeping float32 for numerical stability where needed. This can provide 2-3x speedup on modern GPUs.
+</Info>
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="Diffusion process" icon="wave" href="/concepts/diffusion-process">
+    Understand the mathematical foundation
+  </Card>
+  <Card title="DDIM" icon="forward-fast" href="/concepts/ddim">
+    Learn about faster deterministic sampling
+  </Card>
+  <Card title="Noise schedules" icon="wave-sine" href="/concepts/noise-schedules">
+    Compare different noise scheduling strategies
+  </Card>
+</CardGroup>

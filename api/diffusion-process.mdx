@@ -1,0 +1,253 @@
+---
+title: DiffusionProcess
+description: Core diffusion process class implementing forward and reverse diffusion for image generation
+---
+
+## Overview
+
+The `DiffusionProcess` class implements the complete diffusion process for image generation, including noise scheduling, forward diffusion (adding noise), reverse diffusion (sampling), and training. It uses a cosine beta schedule and supports both DDPM and DDIM sampling strategies.
+
+## Constructor
+
+```python
+DiffusionProcess(
+    image_size,
+    channels,
+    hidden_dims=[32, 64, 128],
+    beta_start=1e-4,
+    beta_end=0.02,
+    noise_steps=1000,
+    device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+)
+```
+
+### Parameters
+
+<ParamField path="image_size" type="int" required>
+  Height and width of the square input images.
+</ParamField>
+
+<ParamField path="channels" type="int" required>
+  Number of image channels (e.g., 1 for grayscale, 3 for RGB).
+</ParamField>
+
+<ParamField path="hidden_dims" type="list[int]" default="[32, 64, 128]">
+  List of hidden dimensions for each level of the U-Net encoder/decoder. The length determines the number of downsampling/upsampling blocks.
+</ParamField>
+
+<ParamField path="beta_start" type="float" default="1e-4">
+  Initial noise variance in the noise schedule. Lower values mean less noise at the beginning of the diffusion process.
+</ParamField>
+
+<ParamField path="beta_end" type="float" default="0.02">
+  Final noise variance in the noise schedule. This determines the maximum noise level at the final diffusion step.
+</ParamField>
+
+<ParamField path="noise_steps" type="int" default="1000">
+  Total number of diffusion timesteps. More steps provide smoother transitions but slower sampling.
+</ParamField>
+
+<ParamField path="device" type="torch.device" default="torch.device('cuda' if torch.cuda.is_available() else 'cpu')">
+  Device to run computations on (CPU or CUDA GPU).
+</ParamField>
+
+### Attributes
+
+After initialization, the following attributes are available:
+
+<ResponseField name="beta_schedule" type="torch.Tensor">
+  Cosine beta schedule tensor of shape `[noise_steps]` defining noise variance at each timestep.
+</ResponseField>
+
+<ResponseField name="alpha_schedule" type="torch.Tensor">
+  Alpha values computed as `1.0 - beta_schedule`.
+</ResponseField>
+
+<ResponseField name="alpha_cumprod" type="torch.Tensor">
+  Cumulative product of alpha values, used in the forward diffusion equation.
+</ResponseField>
+
+<ResponseField name="sqrt_alpha_cumprod" type="torch.Tensor">
+  Square root of `alpha_cumprod`, precomputed for efficiency.
+</ResponseField>
+
+<ResponseField name="sqrt_one_minus_alpha_cumprod" type="torch.Tensor">
+  Square root of `1 - alpha_cumprod`, precomputed for efficiency.
+</ResponseField>
+
+<ResponseField name="model" type="DiffusionModel">
+  The U-Net model used for noise prediction.
+</ResponseField>
+
+<ResponseField name="optimizer" type="torch.optim.Adam">
+  Adam optimizer with learning rate 1e-4.
+</ResponseField>
+
+<ResponseField name="grad_scaler" type="torch.amp.GradScaler">
+  Gradient scaler for mixed precision training (CUDA only).
+</ResponseField>
+
+## Methods
+
+### add_noise
+
+Add noise to clean images according to the forward diffusion process.
+
+```python
+def add_noise(self, x, t)
+```
+
+#### Parameters
+
+<ParamField path="x" type="torch.Tensor" required>
+  Clean images tensor of shape `[batch_size, channels, height, width]`.
+</ParamField>
+
+<ParamField path="t" type="torch.Tensor" required>
+  Timesteps tensor of shape `[batch_size]` containing integer timestep indices.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="noisy_images" type="torch.Tensor">
+  Noisy images at timestep t, shape `[batch_size, channels, height, width]`.
+</ResponseField>
+
+<ResponseField name="noise" type="torch.Tensor">
+  The Gaussian noise that was added, shape `[batch_size, channels, height, width]`.
+</ResponseField>
+
+#### Implementation
+
+Uses the forward diffusion equation:
+```
+x_t = sqrt(alpha_cumprod_t) * x + sqrt(1 - alpha_cumprod_t) * noise
+```
+
+### sample
+
+Generate new samples using DDPM reverse diffusion.
+
+```python
+def sample(self, num_samples=16)
+```
+
+#### Parameters
+
+<ParamField path="num_samples" type="int" default="16">
+  Number of images to generate.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="samples" type="torch.Tensor">
+  Generated images tensor of shape `[num_samples, channels, image_size, image_size]`, values clamped to [-1, 1].
+</ResponseField>
+
+#### Implementation
+
+Starts with random Gaussian noise and iteratively denoises over `noise_steps` timesteps in reverse order. Uses the DDPM sampling algorithm with predicted noise to compute the mean and variance at each step.
+
+### sample_ddim
+
+Generate samples using DDIM (Denoising Diffusion Implicit Models) for faster sampling.
+
+```python
+def sample_ddim(self, num_samples=16, ddim_steps=50, eta=0.0)
+```
+
+#### Parameters
+
+<ParamField path="num_samples" type="int" default="16">
+  Number of images to generate.
+</ParamField>
+
+<ParamField path="ddim_steps" type="int" default="50">
+  Number of denoising steps. Fewer steps mean faster sampling. Must be in range (0, noise_steps].
+</ParamField>
+
+<ParamField path="eta" type="float" default="0.0">
+  Stochasticity parameter. `eta=0` produces deterministic DDIM sampling, `eta=1` recovers DDPM behavior.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="samples" type="torch.Tensor">
+  Generated images tensor of shape `[num_samples, channels, image_size, image_size]`, values clamped to [-1, 1].
+</ResponseField>
+
+#### Raises
+
+- `ValueError`: If `ddim_steps` is not in the valid range.
+
+#### Implementation
+
+Based on "Denoising Diffusion Implicit Models" (Song et al., 2020). Allows faster sampling by skipping timesteps while maintaining quality. The deterministic variant (eta=0) produces consistent outputs for the same noise input.
+
+### train_step
+
+Perform one training step for the diffusion model.
+
+```python
+def train_step(self, x)
+```
+
+#### Parameters
+
+<ParamField path="x" type="torch.Tensor" required>
+  Clean images tensor of shape `[batch_size, channels, height, width]`.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="loss" type="float">
+  MSE loss value between predicted noise and actual noise.
+</ResponseField>
+
+#### Implementation
+
+1. Samples random timesteps for each image in the batch
+2. Adds noise to images using `add_noise()`
+3. Predicts noise using the U-Net model
+4. Computes MSE loss between predicted and actual noise
+5. Performs backpropagation with optional mixed precision (AMP)
+6. Updates model parameters via the optimizer
+
+## Usage example
+
+```python
+import torch
+from models.diffusion import DiffusionProcess
+
+# Initialize diffusion process for 28x28 grayscale images
+diffusion = DiffusionProcess(
+    image_size=28,
+    channels=1,
+    hidden_dims=[32, 64, 128],
+    beta_start=1e-4,
+    beta_end=0.02,
+    noise_steps=1000
+)
+
+# Training loop
+for epoch in range(num_epochs):
+    for batch in dataloader:
+        images = batch[0]  # Shape: [batch_size, 1, 28, 28]
+        loss = diffusion.train_step(images)
+        print(f"Loss: {loss:.4f}")
+
+# Generate samples using DDPM
+samples = diffusion.sample(num_samples=16)
+
+# Generate samples using DDIM (faster)
+samples_ddim = diffusion.sample_ddim(
+    num_samples=16,
+    ddim_steps=50,
+    eta=0.0
+)
+```
+
+## Related classes
+
+- [DiffusionModel](/api/diffusion-model) - The U-Net architecture used for noise prediction
+- [DiffusionProcessCIFAR](/api/diffusion-cifar) - CIFAR-10 variant with linear beta schedule and EMA

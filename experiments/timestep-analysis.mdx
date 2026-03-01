@@ -1,0 +1,337 @@
+---
+title: Per-timestep loss analysis
+description: Analyzing noise prediction difficulty across different timesteps in the diffusion process
+---
+
+This analysis examines how the model's prediction error varies across different timesteps in the diffusion process, revealing which parts of the denoising chain are most challenging.
+
+## Overview
+
+The diffusion process operates over 1000 timesteps, gradually adding noise (forward process) and removing it (reverse process). Not all timesteps are equally difficult for the model to denoise.
+
+The per-timestep loss analysis helps us understand:
+- Which timesteps have higher prediction error
+- How noise prediction difficulty varies across the diffusion chain
+- Whether the model struggles more with early or late denoising
+
+## Running the analysis
+
+The timestep analysis is part of the interpolation utility script:
+
+```bash
+python src/utilities/interpolation_and_timesteps.py
+```
+
+This script (src/utilities/interpolation_and_timesteps.py:22-58):
+- Loads the trained MNIST model
+- Evaluates noise prediction error across timestep buckets
+- Generates a plot showing MSE vs timestep
+- Creates interpolation visualizations (see below)
+
+## Implementation
+
+The analysis function computes per-timestep MSE on validation data (src/utilities/interpolation_and_timesteps.py:22-58):
+
+```python
+@torch.no_grad()
+def per_timestep_loss(diffusion, loader, num_batches=10, buckets=10, device='cuda'):
+    model = diffusion.model.eval()
+    T = diffusion.noise_steps  # 1000
+    bucket_size = T // buckets  # 100 timesteps per bucket
+    losses = torch.zeros(buckets, device=device)
+
+    for x, _ in loader:
+        x = x.to(device)
+        b = x.size(0)
+        # Sample random timesteps
+        t = torch.randint(0, T, (b,), device=device)
+        # Add noise at timestep t
+        x_t, noise = diffusion.add_noise(x, t)
+        # Predict noise
+        pred = model(x_t, t)
+        # Compute MSE per sample
+        l = ((pred - noise)**2).mean(dim=(1,2,3))
+        
+        # Bucketize by timestep
+        idx = (t // bucket_size).clamp(max=buckets-1)
+        for k in range(buckets):
+            mask = (idx == k)
+            if mask.any():
+                losses[k] += l[mask].mean()
+```
+
+The function:
+1. Divides the 1000 timesteps into 10 buckets (0-99, 100-199, etc.)
+2. For each batch, samples random timesteps
+3. Adds noise at those timesteps
+4. Measures the model's noise prediction error (MSE)
+5. Aggregates errors by timestep bucket
+
+## Noise prediction error pattern
+
+The analysis reveals how prediction difficulty varies:
+
+```python
+# Visualize the loss curve
+xs = [f'{k*bucket_size}-{(k+1)*bucket_size-1}' for k in range(buckets)]
+plt.plot(losses.detach().cpu().numpy(), marker='o')
+plt.xticks(range(buckets), xs, rotation=45, ha='right')
+plt.ylabel('MSE (ε-pred)')
+plt.xlabel('timestep bucket')
+plt.title('Noise-prediction error vs timestep')
+```
+
+<Info>
+Typically, the loss curve shows higher error in middle timesteps where the image is partially noised, and lower error at extreme timesteps (pure noise or near-clean image).
+</Info>
+
+## Interpreting the results
+
+### Early timesteps (0-200)
+
+**Low noise, near-clean images:**
+- The model predicts very small noise components
+- Easier to distinguish signal from noise
+- Lower MSE expected
+
+### Middle timesteps (300-700)
+
+**Moderate noise levels:**
+- Image structure is partially destroyed
+- Most challenging region for denoising
+- Higher MSE typically observed
+- This is where the model must make semantic decisions
+
+### Late timesteps (800-1000)
+
+**High noise, near-random:**
+- The image is almost pure noise
+- Model predicts the noise (which is most of the signal)
+- Paradoxically easier than middle timesteps
+- Lower MSE again
+
+<Note>
+The U-shaped or peaked loss curve is a common pattern in diffusion models, reflecting that intermediate noise levels are most challenging to denoise.
+</Note>
+
+## Connection to sampling
+
+Understanding per-timestep difficulty has practical implications:
+
+### DDIM step selection
+
+When using DDIM with fewer steps, the choice of which timesteps to sample matters:
+
+```python
+# DDIM creates a subsequence of the full timestep range
+ddim_timesteps = torch.linspace(0, diffusion.noise_steps - 1, ddim_steps)
+```
+
+Ideally, you want to sample more densely in regions where the model struggles (higher loss).
+
+### Training curriculum
+
+Some advanced techniques weight training loss by timestep:
+- Upweight difficult timesteps (middle region)
+- Downweight easy timesteps (extremes)
+
+This can improve overall model quality.
+
+## Latent interpolation experiments
+
+The script also includes interpolation experiments that help visualize the latent space structure.
+
+### DDPM interpolation
+
+Interpolates between two random noise vectors using stochastic DDPM sampling (src/utilities/interpolation_and_timesteps.py:76-95):
+
+```python
+@torch.no_grad()
+def interpolate_noise_and_generate(diffusion, n=8, steps=7, save_path='interp.png'):
+    # Two random noise endpoints at T
+    z0 = torch.randn(n, C, H, W, device=device)
+    z1 = torch.randn_like(z0)
+    
+    # Linear interpolation
+    alphas = torch.linspace(0, 1, steps, device=z0.device)
+    cols = []
+    for a in alphas:
+        z = (1-a)*z0 + a*z1
+        x = sample_from_xt(diffusion, z)  # DDPM sampling
+        cols.append((x+1)/2)
+    
+    save_image(grid, save_path, nrow=n)
+```
+
+Each column in the output shows samples at a different interpolation point (α = 0, 0.167, 0.333, ..., 1.0).
+
+### DDIM interpolation
+
+Same interpolation but using deterministic DDIM sampling (src/utilities/interpolation_and_timesteps.py:115-139):
+
+```python
+@torch.no_grad()
+def interpolate_noise_and_generate_ddim(diffusion, n=8, steps=7, save_path="interp.png"):
+    z0 = torch.randn(n, C, H, W, device=dev)
+    z1 = torch.randn_like(z0)
+    alphas = torch.linspace(0, 1, steps, device=dev)
+    
+    cols = []
+    for a in alphas:
+        z = (1 - a) * z0 + a * z1
+        x = ddim_sample_from_xt(diffusion, z)  # DDIM sampling (η=0)
+        cols.append((x + 1) / 2)
+    
+    save_image(grid, save_path, nrow=n)
+```
+
+**Key difference**: DDIM's deterministic sampling creates smoother interpolations.
+
+## Generated outputs
+
+When you run the script, it generates several files in the `samples/` directory:
+
+### Loss analysis plot
+
+A matplotlib figure showing noise prediction error across timestep buckets (displayed during execution).
+
+### Interpolation grids
+
+1. **interp.png**: DDPM interpolation grid
+   - Shows stochastic variation between endpoints
+   - Each row is a different sample (n=8)
+   - Each column is a different interpolation alpha (steps=9)
+
+2. **interp_ddim.png**: DDIM interpolation grid
+   - Shows smooth, deterministic transitions
+   - Same grid structure as DDPM version
+   - Demonstrates DDIM's consistency
+
+<Info>
+Compare the two interpolation grids to see the difference between stochastic (DDPM) and deterministic (DDIM) sampling paths through latent space.
+</Info>
+
+## Understanding the sampling functions
+
+### DDPM sampling from x_T
+
+The script implements full DDPM reverse process (src/utilities/interpolation_and_timesteps.py:61-73):
+
+```python
+@torch.no_grad()
+def sample_from_xt(diffusion, x_T):
+    model, T = diffusion.model, diffusion.noise_steps
+    x_t = x_T.clone()
+    
+    # Reverse diffusion process
+    for t in reversed(range(T)):
+        t_b = torch.full((x_t.size(0),), t, device=device)
+        pred_eps = model(x_t, t_b)
+        
+        # DDPM update equations
+        beta_t = diffusion.beta_schedule[t]
+        alpha_t = diffusion.alpha_schedule[t]
+        sqrt_one_minus_alpha_cumprod_t = diffusion.sqrt_one_minus_alpha_cumprod[t]
+        
+        x_t = (1/torch.sqrt(alpha_t)) * (
+            x_t - (beta_t / sqrt_one_minus_alpha_cumprod_t) * pred_eps
+        )
+        
+        # Add noise (except at t=0)
+        if t > 0:
+            x_t += torch.sqrt(beta_t) * torch.randn_like(x_t)
+    
+    return x_t
+```
+
+This follows the standard DDPM algorithm with stochastic noise injection.
+
+### DDIM sampling from x_T
+
+The deterministic DDIM version (src/utilities/interpolation_and_timesteps.py:98-112):
+
+```python
+@torch.no_grad()
+def ddim_sample_from_xt(diffusion, x_T):
+    model, T = diffusion.model, diffusion.noise_steps
+    x_t = x_T.clone()
+    abar = diffusion.alpha_cumprod  # \bar{α}_t
+    
+    for t in reversed(range(T)):
+        t_b = torch.full((x_t.size(0),), t, device=device)
+        eps_hat = model(x_t, t_b)
+        
+        # Predict x0
+        x0_hat = (x_t - torch.sqrt(1 - abar[t]) * eps_hat) / torch.sqrt(abar[t])
+        
+        if t > 0:
+            # DDIM deterministic update (η=0)
+            x_t = torch.sqrt(abar[t-1]) * x0_hat + torch.sqrt(1 - abar[t-1]) * eps_hat
+        else:
+            x_t = x0_hat
+    
+    return x_t
+```
+
+**Key difference**: No random noise is added (η=0), making the process fully deterministic.
+
+## Practical insights
+
+### For model debugging
+
+Per-timestep loss helps identify training issues:
+- **Abnormally high loss at early timesteps**: Model may not handle clean images well
+- **Very high loss at specific buckets**: Potential issues with the noise schedule
+- **Flat loss curve**: Model may not be learning the temporal structure
+
+### For model improvement
+
+Possible improvements based on loss analysis:
+- **Timestep-weighted training**: Focus on difficult regions
+- **Adaptive noise schedules**: Adjust β_t based on loss patterns
+- **Architecture changes**: Add capacity where needed
+
+### For sampling optimization
+
+When designing custom samplers:
+- Sample more densely in high-loss regions
+- Skip more aggressively in low-loss regions
+- Consider non-uniform timestep schedules
+
+<Warning>
+The loss curve can vary significantly between datasets and model architectures. Always run this analysis on your specific setup before making optimization decisions.
+</Warning>
+
+## Running on your own models
+
+To adapt the analysis for custom models:
+
+```python
+# Initialize your diffusion model
+diffusion = YourDiffusionProcess(...)
+diffusion.model.load_state_dict(torch.load("your_model.pt"))
+
+# Load validation data
+loader = DataLoader(your_dataset, batch_size=64, shuffle=True)
+
+# Run analysis
+losses = per_timestep_loss(
+    diffusion, 
+    loader, 
+    num_batches=10,  # More batches = more accurate
+    buckets=10,      # More buckets = finer resolution
+    device='cuda'
+)
+```
+
+Adjust `num_batches` and `buckets` based on your computational budget and desired granularity.
+
+## Conclusion
+
+Per-timestep loss analysis provides valuable insights into:
+1. Which parts of the diffusion process are most challenging
+2. How to optimize sampling strategies
+3. Where to focus model improvements
+4. The difference between stochastic and deterministic sampling
+
+Combined with interpolation experiments, this analysis helps build intuition about how diffusion models work and how to make them more efficient.
